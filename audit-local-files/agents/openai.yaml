@@ -1,5 +1,5 @@
 interface:
-  display_name: "Audit Local Files"
+  display_name: "Clean Your Data"
   short_description: "Analyze local file and app storage safely"
   default_prompt: "Use $audit-local-files to analyze my local file organization without deleting anything."
 policy:

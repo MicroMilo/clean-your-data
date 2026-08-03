@@ -3,7 +3,7 @@ name: audit-local-files
 description: Analyze local computer file organization, workspace sprawl, Codex/date outputs, downloads, cloud-drive folders, Git repo distribution, and chat/collaboration app sediment such as Feishu/Lark, WeChat, Slack, Teams, Discord, Telegram, QQ, DingTalk, and Zoom. Use when the user asks to audit local files, organize Desktop/Downloads/projects, inspect local app storage, identify reusable deliverables, or propose safe archive and cleanup plans.
 ---
 
-# Audit Local Files
+# Clean Your Data
 
 ## Purpose
 
