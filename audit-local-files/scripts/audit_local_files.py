@@ -21,7 +21,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 
 QUICK_TARGET_TIMEOUT_SECONDS = 3
@@ -261,7 +261,7 @@ def now_iso() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
-def human_size(num: int | None) -> str:
+def human_size(num: Optional[int]) -> str:
     if num is None:
         return "unknown"
     value = float(num)
@@ -298,7 +298,7 @@ def expand_pattern(pattern: str, home: Path) -> list[Path]:
     return [Path(expanded)]
 
 
-def du_size(path: Path, timeout: int) -> tuple[int | None, str, bool]:
+def du_size(path: Path, timeout: int) -> tuple[Optional[int], str, bool]:
     if not path.exists():
         return None, "missing", False
     if os.name != "nt" and shutil.which("du"):
@@ -321,7 +321,7 @@ def du_size(path: Path, timeout: int) -> tuple[int | None, str, bool]:
     return fallback_size(path)
 
 
-def fallback_size(path: Path) -> tuple[int | None, str, bool]:
+def fallback_size(path: Path) -> tuple[Optional[int], str, bool]:
     total = 0
     errors: list[str] = []
     stack = [path]
@@ -339,18 +339,18 @@ def fallback_size(path: Path) -> tuple[int | None, str, bool]:
     return total, "; ".join(errors), False
 
 
-def mtime_iso(path: Path) -> str | None:
+def mtime_iso(path: Path) -> Optional[str]:
     try:
         return datetime.fromtimestamp(path.stat().st_mtime).astimezone().isoformat(timespec="seconds")
     except Exception:
         return None
 
 
-def budget_exhausted(deadline: float | None) -> bool:
+def budget_exhausted(deadline: Optional[float]) -> bool:
     return deadline is not None and time.time() >= deadline
 
 
-def scan_targets(home: Path, timeout: int, deadline: float | None, redact: bool) -> list[dict[str, Any]]:
+def scan_targets(home: Path, timeout: int, deadline: Optional[float], redact: bool) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     seen: set[str] = set()
     for target in TARGETS:
@@ -595,7 +595,7 @@ def scan_artifacts(roots: list[Path], home: Path, max_depth: int, min_bytes: int
     return rows[:limit]
 
 
-def codex_summary(home: Path, measure_sizes: bool, timeout: int, deadline: float | None, redact: bool) -> dict[str, Any] | None:
+def codex_summary(home: Path, measure_sizes: bool, timeout: int, deadline: Optional[float], redact: bool) -> Optional[dict[str, Any]]:
     root = home / "Documents" / "Codex"
     if not root.exists() or not root.is_dir():
         return None
@@ -739,7 +739,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-def recommendations(records: list[dict[str, Any]], git: dict[str, Any], artifacts: list[dict[str, Any]], codex: dict[str, Any] | None) -> list[str]:
+def recommendations(records: list[dict[str, Any]], git: dict[str, Any], artifacts: list[dict[str, Any]], codex: Optional[dict[str, Any]]) -> list[str]:
     recs: list[str] = []
     by_label: dict[str, int] = {}
     by_category: dict[str, int] = {}
