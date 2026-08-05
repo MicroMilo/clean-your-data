@@ -1,26 +1,43 @@
-# Local File Audit
+# Example Decision-Ready Report
 
-Generated: `2026-01-01T12:00:00+00:00`
-
-Read-only: no files were modified, moved, or deleted.
+This is synthetic data. It is not a report from a real machine.
 
 ## Outcome
 
-- Home: `~`
-- Disk: 120.0 GB used, 380.0 GB free, 500.0 GB total
-- Desktop is large enough to treat as an inbox. Move durable work into stable roots such as `~/work`, `~/research`, `~/papers`, `~/personal`, or `~/src`.
-- Chat, browser, email, and collaboration app storage is material. Use app-native storage cleanup before filesystem deletion.
-- Git discovery was skipped for speed. Re-run with `--git` before planning repository moves.
+- Read-only: no files were changed.
+- Main pattern: the largest areas are an AI workspace, app-managed collaboration data, and rebuildable project artifacts.
+- Highest-risk area: a Git repository with uncommitted changes.
+- First action: preserve project changes and promote durable outputs before considering cleanup.
 
-## Largest Target Areas
+## Findings
 
-| Size | Category | Risk | Path | Label |
-| --- | --- | --- | --- | --- |
-| 12.0 GB | workspace | user-data | `~/Desktop` | Desktop |
-| 8.5 GB | app-state | user-data | `~/Library/Containers/com.example.chat` | Example Chat |
-| 6.0 GB | workspace | user-data | `~/Documents/Codex` | Codex date workspaces |
-| 950.0 MB | inbox | user-data | `~/Downloads` | Downloads |
+| Size | Classification | Owner | Interpretation | Recommended action |
+| ---: | --- | --- | --- | --- |
+| 8.4 GB | `workspace` | AI workflow | Date-based workspaces contain scratch work and selected outputs | Review outputs; promote durable results; archive old dates |
+| 6.1 GB | `app-state` | Collaboration app | Local app data may include offline files, previews, and databases | Use the app's storage controls; do not delete the container |
+| 3.7 GB | `cache` | Project toolchain | Dependency or build output may be regenerated | Confirm the rebuild command, then request approval |
+| 420 MB | `workspace` | Git project | Repository has uncommitted changes | Commit, stash, or export before moving it |
 
-## Suggested Next Step
+## Safe Next Actions
 
-Create a promotion map before deleting anything: choose which outputs belong in stable folders, which workspaces should be archived, and which app-managed data should be cleaned inside the owning app.
+1. Inspect the exact Git status before any migration.
+2. Move only selected durable outputs into a stable project or library root.
+3. Use the collaboration app's own storage controls for app-managed data.
+4. Remove rebuildable artifacts only after confirming their rebuild cost.
+
+## After A Week
+
+A later snapshot can turn the same audit into a trend report:
+
+```text
+Disk used: +4.2 GB
+AI workspace outputs: +18
+Build artifacts: +2.6 GB
+Git dirty changes: +37
+```
+
+That tells the user where the accumulation is coming from, instead of asking them to repeat an unstructured prompt and compare two unrelated answers.
+
+## What This Report Does Not Mean
+
+A large path is not automatically disposable. A small path can still contain important work. The scanner provides evidence and a review order; the user approves any change.

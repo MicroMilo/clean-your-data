@@ -1,6 +1,6 @@
 # Privacy
 
-Audit Local Files is designed for local, read-only metadata analysis.
+Clean Your Data is designed for local, read-only metadata analysis. The bundled scanner does not make network requests and does not upload reports. An agent may download this public repository, but the scan itself runs on the user's machine.
 
 ## Default Redaction
 
@@ -44,3 +44,5 @@ Before sharing a report publicly:
 - Do not include Git origin URLs.
 - Do not include absolute home paths.
 - Do not include full raw reports from work machines without review.
+
+JSON snapshots are intended for local before/after comparison. They can still contain home-relative project and folder names, so treat them as private until reviewed.

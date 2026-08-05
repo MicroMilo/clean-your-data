@@ -1,72 +1,108 @@
 ---
 name: audit-local-files
-description: Analyze local computer file organization, workspace sprawl, Codex/date outputs, downloads, cloud-drive folders, Git repo distribution, and chat/collaboration app sediment such as Feishu/Lark, WeChat, Slack, Teams, Discord, Telegram, QQ, DingTalk, and Zoom. Use when the user asks to audit local files, organize Desktop/Downloads/projects, inspect local app storage, identify reusable deliverables, or propose safe archive and cleanup plans.
+description: Turn local file sprawl into a privacy-preserving, decision-ready audit. Use when someone asks to analyze or organize Desktop, Downloads, Documents, Codex or other AI workspaces, Git repositories, cloud-sync folders, or local storage from Feishu/Lark, WeChat, Slack, Teams, Discord, Telegram, QQ, DingTalk, Zoom, mail, or browsers. Also use when proposing a safe archive, migration, cleanup, or before/after storage comparison.
 ---
 
 # Clean Your Data
 
-## Purpose
+Use this skill as a local data audit protocol. The goal is not to produce a large directory listing. The goal is to explain what is accumulating, who owns it, what is durable or rebuildable, what is risky, and what the user can safely do next.
 
-Use this skill to produce a privacy-preserving, read-only local file organization audit. The default job is to explain where files are accumulating, which areas are durable knowledge assets, which are temporary workspaces, which are app-managed state, and what can be promoted, archived, or reviewed for cleanup.
+## Safety Contract
 
-## Safety Boundary
-
-- Start read-only. Do not move, delete, or rewrite files unless the user explicitly approves exact paths or cleanup categories.
-- Do not read chat message databases, browser history, credentials, keychains, app profile databases, or private document contents unless the user explicitly asks for that exact content.
-- For chat/collaboration apps, treat container and application-support directories as `app-state` by default. Prefer app-native storage managers for cleanup.
-- For Git repositories, inspect status before any proposed move or cleanup. Dirty repositories and untracked source files are user data.
-- For rebuildable artifacts such as `node_modules`, `.venv`, `build`, `dist`, `.next`, and `target`, explain rebuild cost and get approval before removal.
-- Reports redact the home path by default and use `~` in paths. Git origin URLs are omitted unless the user explicitly passes `--include-git-origins`.
+- Start read-only. Never move, delete, rewrite, or clean files unless the user approves exact paths or an explicit category.
+- Inspect metadata only: path existence, allocated size, modification time, and optional Git status counts.
+- Do not read chat databases, browser history, email bodies, document text, source code, credentials, keychains, or other private contents.
+- Treat Feishu/Lark, WeChat, Slack, Teams, Discord, Telegram, QQ, DingTalk, Zoom, mail, browser, and cloud-sync containers as app-managed or sync-managed state. Recommend the owning app for cleanup.
+- Treat dirty Git repositories and untracked files as user data. Check status before proposing a move.
+- Treat `node_modules`, `.venv`, `build`, `dist`, `.next`, `target`, and similar directories as candidates, not automatic deletions. Explain rebuild cost first.
+- Keep home paths redacted and Git origins omitted. Never use `--no-redact` or `--include-git-origins` for a public report.
 
 ## Workflow
 
-1. Establish scope. If the user does not specify a path, default to the current user's home directory.
-2. Run the bundled scanner:
+### 1. Establish scope
+
+If the user does not name a path, use the current user's home directory. State that the first pass is local, read-only, metadata-only, and anonymized.
+
+### 2. Run the first audit
+
+From the skill directory, run:
 
 ```bash
 python3 scripts/audit_local_files.py --format markdown
 ```
 
-Quick mode favors fast known-location inventory, limited size probes, and skips deep Git and child-directory discovery. Use it first when analyzing an unfamiliar machine.
+Use quick mode for the first pass. It inventories known roots and skips expensive Git and child-directory discovery.
 
-For deeper project evidence, run:
+For a deeper decision about migration or cleanup, run:
 
 ```bash
-python3 scripts/audit_local_files.py --mode full --children --artifacts --git-status --format markdown
+python3 scripts/audit_local_files.py \
+  --mode full --children --artifacts --git-status \
+  --format markdown
 ```
 
-For a private, non-shareable local report with absolute paths, pass `--no-redact`. For Git origin URLs, pass `--include-git-origins`; do not use that flag for public examples or issue attachments.
+Use `--output` to save a report. Use JSON when saving a snapshot for comparison. Read `references/target-taxonomy.md` when adding or interpreting app patterns. Read `references/action-playbook.md` when turning findings into an action plan.
 
-3. Interpret the report using these buckets:
-   - `deliverable`: outputs worth promoting into a stable archive or knowledge base.
-   - `workspace`: project folders, Git repos, Codex date workspaces, experiments.
-   - `app-state`: chat, email, browser, and cloud-sync application data.
-   - `cache`: rebuildable package, build, or tool cache.
-   - `unknown`: needs human review before action.
-4. Recommend a stable target structure before cleanup. A common shape is:
+### 3. Interpret the evidence
 
-```text
-~/work/
-~/research/
-~/papers/
-~/personal/
-~/src/github.com/<owner>/<repo>
-~/archive/YYYY-MM/
+Organize the explanation in this order:
+
+1. **Discover**: identify the largest target areas and meaningful child directories.
+2. **Classify**: label each finding as `deliverable`, `workspace`, `app-state`, `cloud-sync`, `cache`, `inbox`, or `unknown`.
+3. **Explain**: say what normally creates the data and which app or workflow owns it.
+4. **Assess risk**: distinguish user data, rebuildable data, synchronized data, dirty repositories, and unknown data.
+5. **Plan action**: recommend promotion, archive, app-native cleanup, review, or no action. Include the exact path, size, consequence, and rollback or rebuild note.
+6. **Compare**: when two JSON reports are available, run `scripts/compare_reports.py` and explain what grew or shrank.
+
+Do not equate “large” with “safe to delete.” A large app container may contain user data; a small untracked file may be important.
+
+### 4. Produce a decision-ready report
+
+Lead with a short organization conclusion. Then include:
+
+- disk usage and largest target areas;
+- the main accumulation pattern, not just raw numbers;
+- app-managed and cloud-sync data that should be handled by its owner;
+- Codex/AI workspace counts and deliverable-promotion opportunities;
+- Git distribution and dirty-entry risk when available;
+- rebuildable artifacts with rebuild hints;
+- an approval-gated next-action list.
+
+Use this action language:
+
+- **Promote**: a durable output belongs in a stable library or project root.
+- **Archive**: old workspace data can be moved after checking status and references.
+- **Use the owning app**: app state or sync data should be managed in-app.
+- **Review**: ambiguity remains; inspect only the minimum metadata needed.
+- **Rebuildable candidate**: removal may be reasonable after approval and a rebuild check.
+- **Keep**: size is not enough evidence for removal.
+
+### 5. Gate cleanup
+
+If the user requests cleanup, present an approval table before changing anything:
+
+| Exact path | Size | Classification | Action | Risk/consequence | Rollback or rebuild |
+| --- | ---: | --- | --- | --- | --- |
+
+Prefer reversible moves to Trash for user-visible folders when the user approves them. Never bulk-delete app containers, cloud-sync roots, dirty repositories, or unknown paths.
+
+## Snapshot Comparison
+
+The JSON report is intentionally suitable for local snapshots:
+
+```bash
+python3 scripts/audit_local_files.py \
+  --mode full --children --artifacts --git-status \
+  --format json --output before.json
+
+python3 scripts/compare_reports.py before.json after.json
 ```
 
-5. If cleanup is requested, present an approval-gated plan with exact targets, size, risk, consequence, and rollback. Prefer moving user-visible folders to Trash over permanent deletion.
+The comparison script reports changes in disk usage, target areas, Codex counts, Git buckets, and artifacts. It preserves whatever redaction was present in the input reports and never reads file contents.
 
-## Target Taxonomy
+## Failure Handling
 
-Read `references/target-taxonomy.md` when adding new app patterns, explaining why an app is similar to Feishu/WeChat, or classifying ambiguous findings.
-
-## Report Expectations
-
-Lead with the organization conclusion, not raw sizes. Include:
-
-- largest workspace roots and app-state areas;
-- scattered Git repo buckets and dirty repo risk when available;
-- Codex date/output/work accumulation;
-- chat/collaboration app sediment that should be managed in-app;
-- deliverable promotion opportunities;
-- cleanup candidates only as optional, approval-gated next steps.
+- If a size probe times out, report it as unknown or timed out. Do not silently treat it as zero.
+- If Git discovery is skipped, say so and do not recommend moving repositories until status is checked.
+- If a path is ambiguous, classify it as `unknown` and ask for targeted review instead of guessing.
+- If the user asks for content inspection, restate the metadata-only boundary and ask for the smallest explicit scope needed.
