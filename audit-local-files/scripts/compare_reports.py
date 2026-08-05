@@ -48,10 +48,33 @@ def diff_rows(before_rows: list[dict[str, Any]], after_rows: list[dict[str, Any]
         new = after.get(path, {})
         old_size = old.get("allocated_bytes")
         new_size = new.get("allocated_bytes")
+        old_status = old.get("measurement_status", "measured" if isinstance(old_size, int) else "unknown")
+        new_status = new.get("measurement_status", "measured" if isinstance(new_size, int) else "unknown")
         if path not in before and isinstance(new_size, int):
             old_size = 0
+            old_status = "missing"
         if path not in after and isinstance(old_size, int):
             new_size = 0
+            new_status = "missing"
+        incomplete_statuses = {"timeout", "error", "unknown"}
+        if old_status in incomplete_statuses or new_status in incomplete_statuses:
+            result.append(
+                {
+                    "path": path,
+                    "label": new.get("label") or old.get("label") or new.get("name") or old.get("name") or "",
+                    "category": new.get("category") or old.get("category") or "",
+                    "before_bytes": old_size if isinstance(old_size, int) else None,
+                    "after_bytes": new_size if isinstance(new_size, int) else None,
+                    "delta_bytes": None,
+                    "before": human_size(old_size if isinstance(old_size, int) else None),
+                    "after": human_size(new_size if isinstance(new_size, int) else None),
+                    "delta": "unknown",
+                    "status": "incomplete",
+                    "measurement_status_before": old_status,
+                    "measurement_status_after": new_status,
+                }
+            )
+            continue
         if not isinstance(old_size, int) or not isinstance(new_size, int):
             continue
         delta = new_size - old_size
@@ -69,9 +92,11 @@ def diff_rows(before_rows: list[dict[str, Any]], after_rows: list[dict[str, Any]
                 "after": human_size(new_size),
                 "delta": human_size(delta),
                 "status": "new" if path not in before else "removed" if path not in after else "changed",
+                "measurement_status_before": old_status,
+                "measurement_status_after": new_status,
             }
         )
-    return sorted(result, key=lambda row: abs(row["delta_bytes"]), reverse=True)
+    return sorted(result, key=lambda row: abs(row["delta_bytes"] or 0), reverse=True)
 
 
 def diff_buckets(before_rows: list[dict[str, Any]], after_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -92,6 +117,31 @@ def diff_buckets(before_rows: list[dict[str, Any]], after_rows: list[dict[str, A
     return sorted(result, key=lambda row: abs(row["dirty_change_delta"]) + abs(row["repo_delta"]), reverse=True)
 
 
+def diff_coverage(before_rows: list[dict[str, Any]], after_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    before = {str(row.get("label")): row for row in before_rows if row.get("label")}
+    after = {str(row.get("label")): row for row in after_rows if row.get("label")}
+    result: list[dict[str, Any]] = []
+    for label in sorted(set(before) | set(after)):
+        old = before.get(label, {})
+        new = after.get(label, {})
+        old_status = old.get("status", "not_found")
+        new_status = new.get("status", "not_found")
+        old_bytes = old.get("measured_bytes")
+        new_bytes = new.get("measured_bytes")
+        delta = new_bytes - old_bytes if isinstance(old_bytes, int) and isinstance(new_bytes, int) and old_status == new_status == "measured" else None
+        if old_status != new_status or delta not in (None, 0):
+            result.append(
+                {
+                    "label": label,
+                    "before_status": old_status,
+                    "after_status": new_status,
+                    "delta_bytes": delta,
+                    "delta": human_size(delta),
+                }
+            )
+    return result
+
+
 def compare(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
     before_disk = before.get("disk", {})
     after_disk = after.get("disk", {})
@@ -110,7 +160,7 @@ def compare(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
         for key in ("date_dir_count", "work_dir_count", "outputs_dir_count")
     }
     return {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "before_generated_at": before.get("generated_at"),
         "after_generated_at": after.get("generated_at"),
@@ -122,12 +172,17 @@ def compare(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
         },
         "disk": disk,
         "target_areas": diff_rows(before.get("target_areas", []), after.get("target_areas", [])),
+        "coverage": diff_coverage(before.get("coverage", []), after.get("coverage", [])),
         "codex": codex,
         "git_buckets": diff_buckets(
             (before.get("git") or {}).get("buckets", []),
             (after.get("git") or {}).get("buckets", []),
         ),
         "artifacts": diff_rows(before.get("artifacts", []), after.get("artifacts", [])),
+        "action_gate": {
+            "before": (before.get("action_gate") or {}).get("status", "unknown"),
+            "after": (after.get("action_gate") or {}).get("status", "unknown"),
+        },
     }
 
 
@@ -161,9 +216,19 @@ def render_markdown(result: dict[str, Any]) -> str:
         f"work `{codex['work_dir_count']:+d}`, "
         f"outputs `{codex['outputs_dir_count']:+d}`"
     )
+    lines.append(f"- Action gate: `{result['action_gate']['before']}` -> `{result['action_gate']['after']}`")
     if result["redaction"]["origins_included"]:
         lines.append("- Privacy warning: one input report included Git origins; keep this comparison private.")
     lines.append("")
+    if result["coverage"]:
+        lines.append("## Coverage Changes")
+        lines.append("")
+        rows = [
+            [row["before_status"], row["after_status"], row["delta"], row["label"]]
+            for row in result["coverage"][:20]
+        ]
+        lines.append(markdown_table(["Before", "After", "Measured change", "Target"], rows))
+        lines.append("")
     lines.append("## Largest Target Changes")
     lines.append("")
     rows = [

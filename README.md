@@ -94,6 +94,27 @@ python3 audit-local-files/scripts/compare_reports.py \
 
 The comparison highlights disk usage, target areas, Codex workspace counts, Git dirty changes, and rebuildable artifacts that changed. Keep snapshots local unless you review their paths first.
 
+## Evidence, Not Guesswork
+
+The JSON report now carries a small decision contract:
+
+- `measurement_status` distinguishes measured, timeout, error, missing, and unknown;
+- `coverage` records which target families were actually measured;
+- `findings` links each recommendation to evidence, owner, risk, confidence, and rollback/rebuild guidance;
+- `action_gate` keeps the result in `review_only` when evidence is incomplete or dirty Git work must be preserved.
+
+Validate a saved snapshot before handing it to another Agent:
+
+```bash
+python3 audit-local-files/scripts/validate_report.py snapshots/before.json
+```
+
+Artifact rows are candidate subsets. They may already be included in a parent workspace total, so the report does not present them as additive reclaimable space.
+
+## How We Iterate The Skill
+
+The project uses a maintainer-only evaluation loop: run a real local audit, aggregate and redact the evidence, ask independent roles to review it, synthesize the smallest change, then run contract and fixture tests before publishing. Raw local reports never enter the repository. See [the evaluation loop](audit-local-files/references/agentic-evaluation.md).
+
 ## What A Useful Result Looks Like
 
 The report is designed to turn raw measurements into a next step:
@@ -204,9 +225,15 @@ python3 audit-local-files/scripts/audit_local_files.py \
 
 保存 JSON 快照后，可以用 `audit-local-files/scripts/compare_reports.py` 比较两次审计，观察哪些区域在增长。
 
+交给其他 Agent 之前，可以先运行 `python3 audit-local-files/scripts/validate_report.py snapshots/before.json` 校验报告契约。
+
+JSON 报告还会区分 `measured`、`timeout`、`error`、`missing` 和 `unknown`，记录 coverage、证据关联的 findings，以及是否因为证据不足或 Git dirty 状态而只能停留在 `review_only`。artifact 可能已经包含在父工作区大小中，不会被当成可回收空间重复相加。
+
 ### 隐私与安全
 
 扫描器只读取路径、占用大小、修改时间和可选的 Git 状态计数；不会读取聊天、浏览器历史、邮件正文、文档正文、源码、凭据或 keychain。默认把 home 目录显示为 `~`，默认不输出 Git origin URL。任何公开分享前，都应检查项目名和文件夹名。
+
+项目维护时会使用真实本机审计的聚合匿名证据包，让不同 Agent 角色独立评审，再通过确定性 fixture 和 schema 测试后发布；原始本机报告不会进入仓库。
 
 ### 依赖
 
