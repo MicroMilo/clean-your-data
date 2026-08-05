@@ -72,6 +72,19 @@ def main() -> int:
         )
         assert artifact_finding["counted_in_total"] is True
 
+        html_command = command.copy()
+        html_command[html_command.index("json")] = "html"
+        html_result = subprocess.run(
+            html_command,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        assert html_result.stdout.lower().startswith("<!doctype html>")
+        assert str(home) not in html_result.stdout
+        assert "Approval required" in html_result.stdout
+        assert "Largest target areas" in html_result.stdout
+
         before = home / "before.json"
         before.write_text(result.stdout, encoding="utf-8")
         subprocess.run([sys.executable, str(VALIDATE_SCRIPT), str(before)], check=True)

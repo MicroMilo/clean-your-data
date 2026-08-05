@@ -6,4 +6,5 @@ __pycache__/
 .ruff_cache/
 local-file-audit*.md
 local-file-audit*.json
+local-file-audit*.html
 *.zip

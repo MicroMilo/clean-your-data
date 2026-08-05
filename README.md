@@ -3,6 +3,10 @@
 [![CI](https://github.com/MicroMilo/clean-your-data/actions/workflows/test.yml/badge.svg)](https://github.com/MicroMilo/clean-your-data/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
+<p align="center">
+  <img src="assets/github-social-preview-v1.png" alt="Clean Your Data: a safe map before you clean" width="100%">
+</p>
+
 **Your files are everywhere. Get a safe map before you touch anything.**
 
 **Clean Your Data** turns local file sprawl into a privacy-preserving, decision-ready audit. It finds where data accumulates across Desktop, Downloads, AI workspaces, Git repositories, chat and collaboration apps, cloud-sync folders, and rebuildable project artifacts.
@@ -52,6 +56,16 @@ From the repository root:
 ```bash
 python3 audit-local-files/scripts/audit_local_files.py --format markdown
 ```
+
+Open a more readable, self-contained report in a browser or print it to PDF:
+
+```bash
+python3 audit-local-files/scripts/audit_local_files.py \
+  --format html \
+  --output local-file-audit.html
+```
+
+The HTML is generated locally, has no external assets, and starts with the decision state, evidence blockers, and the largest areas before showing the detailed tables. Use JSON for Agent handoff and snapshot comparison.
 
 Write a local report:
 
@@ -108,6 +122,8 @@ Validate a saved snapshot before handing it to another Agent:
 ```bash
 python3 audit-local-files/scripts/validate_report.py snapshots/before.json
 ```
+
+HTML is intended for local review. It follows the report's redaction settings, but you should still review project and folder names before sharing it.
 
 Artifact rows are candidate subsets. They may already be included in a parent workspace total, so the report does not present them as additive reclaimable space.
 
@@ -214,6 +230,15 @@ Codex 可以完成一次分析，但这个仓库把每次都应该保持一致�
 ```bash
 python3 audit-local-files/scripts/audit_local_files.py --format markdown
 ```
+
+更适合人直接阅读的离线 HTML 报告：
+
+```bash
+python3 audit-local-files/scripts/audit_local_files.py \
+  --format html --output local-file-audit.html
+```
+
+HTML 会先展示决策状态、证据阻塞项和最大目录，再展开 Git、Codex 工作区、App 数据和可重建产物。它是本地生成的单文件，不依赖网络；JSON 仍用于 Agent 交接和历史比较。
 
 深度模式：
 
