@@ -13,6 +13,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "audit-local-files" / "scripts" / "audit_local_files.py"
 COMPARE_SCRIPT = ROOT / "audit-local-files" / "scripts" / "compare_reports.py"
+VALIDATE_SCRIPT = ROOT / "audit-local-files" / "scripts" / "validate_report.py"
 
 
 def main() -> int:
@@ -50,7 +51,9 @@ def main() -> int:
         report = json.loads(result.stdout)
         raw = result.stdout
         assert report["read_only"] is True
+        assert report["schema_version"] == "1.1"
         assert report["settings"]["home"] == "~"
+        assert report["settings"]["scope_id"] == "home"
         assert report["disk"]["path"] == "~"
         assert str(home) not in raw
         assert "https://github.com/example/private-repo.git" not in raw
@@ -58,15 +61,27 @@ def main() -> int:
         assert len(report["git"]["repos"]) == 1
         assert all("origin" not in repo for repo in report["git"]["repos"])
         assert any(item["name"] == "node_modules" for item in report["artifacts"])
+        assert any(item["label"] == "Desktop" for item in report["coverage"])
+        assert all("measurement_status" in item for item in report["target_areas"])
+        assert report["findings"]
+        assert report["action_gate"]["status"] == "approval_required"
+        assert report["action_gate"]["exact_cleanup_allowed"] is False
+        artifact_finding = next(
+            item for item in report["findings"]
+            if item.get("path_redacted", "").endswith("node_modules")
+        )
+        assert artifact_finding["counted_in_total"] is True
 
         before = home / "before.json"
         before.write_text(result.stdout, encoding="utf-8")
+        subprocess.run([sys.executable, str(VALIDATE_SCRIPT), str(before)], check=True)
         (home / "Desktop" / "growth.bin").write_bytes(b"x" * (2 * 1024 * 1024))
         (home / "Downloads").mkdir()
         (home / "Downloads" / "new.bin").write_bytes(b"x" * (2 * 1024 * 1024))
         after_result = subprocess.run(command, text=True, capture_output=True, check=True)
         after = home / "after.json"
         after.write_text(after_result.stdout, encoding="utf-8")
+        subprocess.run([sys.executable, str(VALIDATE_SCRIPT), str(after)], check=True)
         comparison = subprocess.run(
             [
                 sys.executable,
@@ -81,6 +96,9 @@ def main() -> int:
             check=True,
         )
         comparison_report = json.loads(comparison.stdout)
+        assert comparison_report["schema_version"] == "1.1"
+        assert "coverage" in comparison_report
+        assert comparison_report["action_gate"]["before"] == "approval_required"
         desktop_change = next(
             row for row in comparison_report["target_areas"] if row["path"] == "~/Desktop"
         )

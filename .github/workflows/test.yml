@@ -19,3 +19,5 @@ jobs:
         run: python -m py_compile audit-local-files/scripts/*.py
       - name: Run smoke test
         run: python tests/smoke_test.py
+      - name: Run contract test
+        run: python tests/contract_test.py

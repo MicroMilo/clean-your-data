@@ -7,16 +7,17 @@ This is synthetic data. It is not a report from a real machine.
 - Read-only: no files were changed.
 - Main pattern: the largest areas are an AI workspace, app-managed collaboration data, and rebuildable project artifacts.
 - Highest-risk area: a Git repository with uncommitted changes.
+- Decision state: `review_only`; exact cleanup decisions are blocked until incomplete measurements and dirty work are reviewed.
 - First action: preserve project changes and promote durable outputs before considering cleanup.
 
 ## Findings
 
-| Size | Classification | Owner | Interpretation | Recommended action |
-| ---: | --- | --- | --- | --- |
-| 8.4 GB | `workspace` | AI workflow | Date-based workspaces contain scratch work and selected outputs | Review outputs; promote durable results; archive old dates |
-| 6.1 GB | `app-state` | Collaboration app | Local app data may include offline files, previews, and databases | Use the app's storage controls; do not delete the container |
-| 3.7 GB | `cache` | Project toolchain | Dependency or build output may be regenerated | Confirm the rebuild command, then request approval |
-| 420 MB | `workspace` | Git project | Repository has uncommitted changes | Commit, stash, or export before moving it |
+| Size | Status | Confidence | Classification | Owner | Recommended action |
+| ---: | --- | --- | --- | --- | --- |
+| 8.4 GB | `measured` | `strong_inference` | `workspace` | AI workflow | Review outputs; promote durable results; archive old dates |
+| 6.1 GB | `measured` | `strong_inference` | `app-state` | Collaboration app | Use the app's storage controls; do not delete the container |
+| 3.7 GB | `measured` | `strong_inference` | `cache` | Project toolchain | Confirm the rebuild command, then request approval |
+| unknown | `timeout` | `low` | `workspace` | Git project | Preserve or inspect before moving anything |
 
 ## Safe Next Actions
 

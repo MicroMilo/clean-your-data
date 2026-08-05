@@ -41,7 +41,13 @@ python3 scripts/audit_local_files.py \
   --format markdown
 ```
 
-Use `--output` to save a report. Use JSON when saving a snapshot for comparison. Read `references/target-taxonomy.md` when adding or interpreting app patterns. Read `references/action-playbook.md` when turning findings into an action plan.
+Use `--output` to save a report. Use JSON when saving a snapshot for comparison. Read `references/target-taxonomy.md` when adding or interpreting app patterns. Read `references/report-schema.md` when consuming JSON or building an evidence-linked decision. Read `references/action-playbook.md` when turning findings into an action plan.
+
+Before comparing or sharing a JSON snapshot with another Agent, run:
+
+```bash
+python3 scripts/validate_report.py report.json
+```
 
 ### 3. Interpret the evidence
 
@@ -55,6 +61,8 @@ Organize the explanation in this order:
 6. **Compare**: when two JSON reports are available, run `scripts/compare_reports.py` and explain what grew or shrank.
 
 Do not equate “large” with “safe to delete.” A large app container may contain user data; a small untracked file may be important.
+
+Treat `measurement_status: timeout|error|unknown` as unknown, never as zero. Treat artifact rows as candidate subsets that may already be included in a parent workspace total. Use `coverage`, `findings`, and `action_gate` to preserve what was measured, why a conclusion was made, and whether exact cleanup review is blocked.
 
 ### 4. Produce a decision-ready report
 
@@ -86,6 +94,8 @@ If the user requests cleanup, present an approval table before changing anything
 
 Prefer reversible moves to Trash for user-visible folders when the user approves them. Never bulk-delete app containers, cloud-sync roots, dirty repositories, or unknown paths.
 
+If the report's `action_gate.status` is `review_only`, do not produce an executable cleanup plan. Resolve the listed evidence blockers first. The scanner itself never performs cleanup, even when the gate is `approval_required`.
+
 ## Snapshot Comparison
 
 The JSON report is intentionally suitable for local snapshots:
@@ -99,6 +109,10 @@ python3 scripts/compare_reports.py before.json after.json
 ```
 
 The comparison script reports changes in disk usage, target areas, Codex counts, Git buckets, and artifacts. It preserves whatever redaction was present in the input reports and never reads file contents.
+
+## Maintainer Evaluation Loop
+
+For a repeatable skill iteration using local evidence and independent roles, read `references/agentic-evaluation.md`. Keep raw reports in a temporary local directory, pass only an aggregated redacted packet to reviewers, record timed-out roles as incomplete, then require contract and fixture tests before publishing.
 
 ## Failure Handling
 
