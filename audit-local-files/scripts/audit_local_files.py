@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import glob
 import hashlib
+import html
 import json
 import os
 import platform
@@ -1172,11 +1173,504 @@ def render_markdown(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def html_escape(value: Any) -> str:
+    return html.escape("" if value is None else str(value), quote=True)
+
+
+def html_token(value: Any) -> str:
+    token = re.sub(r"[^a-z0-9_-]+", "-", str(value).lower()).strip("-")
+    return token or "unknown"
+
+
+def html_badge(value: Any) -> str:
+    return f'<span class="badge {html_token(value)}">{html_escape(value)}</span>'
+
+
+def html_table(headers: list[str], rows: list[list[str]], empty: str = "No data.") -> str:
+    if not rows:
+        return f'<p class="empty">{html_escape(empty)}</p>'
+    header_html = "".join(f"<th scope=\"col\">{html_escape(header)}</th>" for header in headers)
+    body_html = []
+    for row in rows:
+        body_html.append("<tr>" + "".join(f"<td>{cell}</td>" for cell in row) + "</tr>")
+    return (
+        '<div class="table-wrap"><table><thead><tr>'
+        + header_html
+        + "</tr></thead><tbody>"
+        + "".join(body_html)
+        + "</tbody></table></div>"
+    )
+
+
+def html_metric(label: str, value: Any, note: str = "") -> str:
+    return (
+        '<div class="metric">'
+        f'<div class="metric-label">{html_escape(label)}</div>'
+        f'<div class="metric-value">{html_escape(value)}</div>'
+        f'<div class="metric-note">{html_escape(note)}</div>'
+        "</div>"
+    )
+
+
+def html_meter(label: str, percentage: int, note: str, tone: str = "green") -> str:
+    percentage = max(0, min(100, int(percentage)))
+    return (
+        '<div class="meter-block">'
+        f'<div class="meter-label"><span>{html_escape(label)}</span><strong>{percentage}%</strong></div>'
+        f'<div class="meter"><span class="meter-fill {html_token(tone)}" style="width: {percentage}%"></span></div>'
+        f'<div class="meter-note">{html_escape(note)}</div>'
+        '</div>'
+    )
+
+
+def render_html(report: dict[str, Any]) -> str:
+    """Render a self-contained, offline report for human review."""
+
+    disk = report.get("disk") or {}
+    gate = report.get("action_gate") or {}
+    settings = report.get("settings") or {}
+    target_areas = report.get("target_areas") or []
+    coverage = report.get("coverage") or []
+    artifacts = report.get("artifacts") or []
+    findings = report.get("findings") or []
+    codex = report.get("codex") or {}
+    git = report.get("git") or {}
+    blockers = gate.get("blockers") or []
+    decision_status = gate.get("status", "review_only")
+    measured_targets = sum(row.get("measurement_status") == "measured" for row in target_areas)
+    measured_artifacts = sum(row.get("measurement_status") == "measured" for row in artifacts)
+    target_note = f"{measured_targets} measured of {len(target_areas)} rows"
+    artifact_note = f"{measured_artifacts} measured; subsets may overlap"
+    target_percentage = round(measured_targets * 100 / len(target_areas)) if target_areas else 0
+    artifact_percentage = round(measured_artifacts * 100 / len(artifacts)) if artifacts else 100
+    disk_used_percentage = 0
+    if isinstance(disk.get("used_bytes"), int) and isinstance(disk.get("total_bytes"), int) and disk.get("total_bytes"):
+        disk_used_percentage = round(disk["used_bytes"] * 100 / disk["total_bytes"])
+    dirty_repo_count = sum(
+        row.get("dirty_repo_count", 0)
+        for row in git.get("buckets", [])
+        if isinstance(row.get("dirty_repo_count", 0), int)
+    )
+    dirty_change_count = sum(
+        row.get("dirty_change_count", 0)
+        for row in git.get("buckets", [])
+        if isinstance(row.get("dirty_change_count", 0), int)
+    )
+    git_value = "not scanned" if git.get("skipped") else len(git.get("repos", []))
+    git_note = "Run full mode with --git-status for preservation checks" if git.get("skipped") else "repositories discovered"
+    codex_value = codex.get("outputs_dir_count", "not detected") if codex else "not detected"
+    codex_note = "outputs directories" if codex else "Codex workspace not found"
+    if decision_status == "review_only":
+        decision_label = "Review only"
+        decision_heading = "Evidence is incomplete"
+        decision_copy = "Resolve the blockers below before turning this report into a cleanup plan."
+        decision_tone = "amber"
+    else:
+        decision_label = "Approval required"
+        decision_heading = "Ready for exact review"
+        decision_copy = "The measurements are complete enough to review exact paths one category at a time."
+        decision_tone = "blue"
+
+    warnings = []
+    if settings.get("redact") is False:
+        warnings.append("This report was generated with path redaction disabled. Keep it private.")
+    if settings.get("include_git_origins"):
+        warnings.append("Git origin collection was enabled. Keep this report private.")
+    warning_html = "".join(f'<div class="warning">{html_escape(item)}</div>' for item in warnings)
+
+    target_rows = []
+    for row in target_areas[:25]:
+        target_rows.append(
+            [
+                html_escape(display_measurement(row)),
+                html_badge(row.get("measurement_status", "unknown")),
+                html_escape(row.get("category", "unknown")),
+                html_escape(row.get("risk", "review")),
+                f'<code>{html_escape(row.get("path", ""))}</code>',
+                html_escape(row.get("label", "")),
+            ]
+        )
+
+    coverage_rows = []
+    for row in coverage:
+        coverage_rows.append(
+            [
+                html_badge(row.get("status", "unknown")),
+                html_escape(row.get("matches", 0)),
+                html_escape(row.get("unknown", 0)),
+                html_escape(human_size(row.get("measured_bytes"))),
+                html_escape(row.get("label", "")),
+            ]
+        )
+
+    app_rows = []
+    for row in [row for row in target_areas if row.get("category") in {"app-state", "cloud-sync"}][:20]:
+        app_rows.append(
+            [
+                html_escape(display_measurement(row)),
+                html_badge(row.get("measurement_status", "unknown")),
+                html_escape(row.get("risk", "review")),
+                f'<code>{html_escape(row.get("path", ""))}</code>',
+                html_escape(row.get("label", "")),
+            ]
+        )
+
+    codex_rows = []
+    for row in (codex.get("top_date_dirs") or [])[:10]:
+        codex_rows.append(
+            [
+                html_escape(display_measurement(row)),
+                html_badge(row.get("measurement_status", "unknown")),
+                f'<code>{html_escape(row.get("path", ""))}</code>',
+                html_escape(row.get("modified_at") or ""),
+            ]
+        )
+
+    child_sections = []
+    for root, rows_data in (report.get("top_children") or {}).items():
+        rows = []
+        for row in rows_data[:15]:
+            rows.append(
+                [
+                    html_escape(display_measurement(row)),
+                    html_badge(row.get("measurement_status", "unknown")),
+                    f'<code>{html_escape(row.get("path", ""))}</code>',
+                    html_escape(row.get("modified_at") or ""),
+                ]
+            )
+        if rows:
+            child_sections.append(
+                f'<h3>{html_escape(root)}</h3>'
+                + html_table(["Size", "Status", "Path", "Modified"], rows)
+            )
+    children_html = "".join(child_sections) or '<p class="empty">No measured child directories above the configured threshold.</p>'
+
+    git_rows = []
+    for row in (git.get("buckets") or [])[:20]:
+        git_rows.append(
+            [
+                html_escape(row.get("repo_count", 0)),
+                html_escape(row.get("dirty_repo_count", 0)),
+                html_escape(row.get("dirty_change_count", 0)),
+                f'<code>{html_escape(row.get("bucket", ""))}</code>',
+            ]
+        )
+    git_status_note = (
+        "Git dirty counts were not collected. Do not move repositories yet."
+        if not git.get("skipped") and not settings.get("git_status")
+        else "Dirty changes are preservation blockers."
+        if not git.get("skipped") and settings.get("git_status")
+        else "Git discovery was skipped in quick mode."
+    )
+
+    finding_by_path = {item.get("path_redacted"): item for item in findings}
+    artifact_rows = []
+    for row in artifacts[:30]:
+        finding = finding_by_path.get(row.get("path"), {})
+        artifact_rows.append(
+            [
+                html_escape(display_measurement(row)),
+                html_badge(row.get("measurement_status", "unknown")),
+                html_escape(row.get("risk", "review")),
+                html_escape(row.get("name", "")),
+                f'<code>{html_escape(row.get("path", ""))}</code>',
+                html_escape("yes" if finding.get("counted_in_total") else "unknown"),
+                html_escape(row.get("rebuild_hint", "")),
+            ]
+        )
+
+    finding_rows = []
+    for finding in findings[:40]:
+        finding_rows.append(
+            [
+                html_badge(finding.get("status", "unknown")),
+                html_badge(finding.get("confidence", "low")),
+                html_escape(finding.get("category", "unknown")),
+                html_escape(finding.get("owner", "unknown")),
+                f'<code>{html_escape(finding.get("path_redacted", ""))}</code>',
+                html_escape(finding.get("recommendation", "Review")),
+            ]
+        )
+
+    recommendation_items = "".join(
+        f"<li>{html_escape(item)}</li>" for item in (report.get("recommendations") or [])
+    ) or "<li>No additional heuristic recommendations.</li>"
+    blocker_items = "".join(f"<li>{html_escape(item)}</li>" for item in blockers)
+    blocker_content = (
+        f"<ul>{blocker_items}</ul>"
+        if blockers
+        else '<p class="good">No evidence blockers. Any cleanup is still approval-gated.</p>'
+    )
+    app_content = html_table(
+        ["Size", "Status", "Risk", "Path", "Target"],
+        app_rows,
+        "No app-managed or cloud-sync targets were found.",
+    )
+    codex_content = (
+        f'<div class="inline-stats"><span><strong>{html_escape(codex.get("date_dir_count", 0))}</strong> date directories</span>'
+        f'<span><strong>{html_escape(codex.get("work_dir_count", 0))}</strong> work directories</span>'
+        f'<span><strong>{html_escape(codex.get("outputs_dir_count", 0))}</strong> outputs directories</span></div>'
+        + html_table(["Size", "Status", "Date directory", "Modified"], codex_rows, "No dated Codex directories were measured.")
+        if codex
+        else '<p class="empty">No Codex workspace was found.</p>'
+    )
+
+    styles = """
+    :root { color-scheme: light; --ink: #182b29; --muted: #687874; --line: #d8e1dd; --paper: #ffffff; --bg: #eef2ef; --deep: #123c37; --deep-2: #1f5a50; --green: #1f7658; --green-soft: #e5f2eb; --lime: #d4e96e; --amber: #916100; --amber-soft: #fff2d2; --red: #a74743; --red-soft: #fbe9e7; --blue: #285f87; --blue-soft: #e8f1f7; --coral: #df785c; }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    a { color: inherit; }
+    .masthead { background: var(--deep); color: #f7f6ed; }
+    .masthead-inner, main { max-width: 1240px; margin: 0 auto; }
+    .masthead-inner { display: flex; justify-content: space-between; gap: 22px; align-items: center; padding: 15px 22px; }
+    .brand { display: flex; align-items: center; gap: 10px; font-weight: 750; letter-spacing: .01em; }
+    .brand-mark { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 7px; background: var(--lime); color: var(--deep); font-size: 10px; font-weight: 850; letter-spacing: -.02em; }
+    .masthead-meta { color: #b6cbc2; font-size: 12px; text-align: right; }
+    main { padding: 0 22px 62px; }
+    .hero { display: grid; grid-template-columns: minmax(0, 1fr) 330px; gap: 34px; align-items: stretch; margin: 0 -22px; padding: 48px 44px 42px; background: var(--deep); color: #f7f6ed; border-top: 1px solid #2a5a51; }
+    .eyebrow, .section-kicker { margin: 0 0 8px; color: var(--lime); font-size: 11px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
+    h1 { max-width: 720px; margin: 0; font-size: clamp(34px, 5vw, 60px); line-height: 1.02; letter-spacing: 0; }
+    h2 { margin: 0; font-size: 21px; letter-spacing: 0; }
+    h3 { margin: 20px 0 8px; font-size: 15px; }
+    .lede { max-width: 700px; margin: 16px 0 0; color: #c6d5cf; font-size: 17px; }
+    .hero-meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 24px; }
+    .tag { display: inline-flex; align-items: center; min-height: 25px; padding: 3px 9px; border: 1px solid #416b61; border-radius: 999px; color: #d5e2dc; font-size: 12px; }
+    .status-card { display: flex; gap: 14px; align-items: flex-start; align-self: center; padding: 20px; border: 1px solid #54766e; border-radius: 8px; background: #f7f4e9; color: var(--ink); }
+    .status-icon { display: grid; place-items: center; flex: 0 0 auto; width: 34px; height: 34px; border-radius: 50%; background: var(--amber-soft); color: var(--amber); font-size: 18px; font-weight: 850; }
+    .status-icon.blue { background: var(--blue-soft); color: var(--blue); }
+    .decision-label { color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; }
+    .decision-value { margin-top: 4px; font-size: 19px; font-weight: 800; }
+    .decision-value.amber { color: var(--amber); }
+    .decision-value.blue { color: var(--blue); }
+    .decision-copy { margin: 7px 0 0; color: var(--muted); font-size: 13px; }
+    .report-nav { display: flex; gap: 18px; overflow-x: auto; margin: 0 -22px; padding: 12px 22px; border-bottom: 1px solid var(--line); background: var(--paper); color: var(--muted); font-size: 12px; white-space: nowrap; }
+    .report-nav a { text-decoration: none; }
+    .report-nav a:hover { color: var(--deep); }
+    .notice, .warning, .panel { border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
+    .notice { margin-top: 18px; padding: 11px 14px; color: var(--muted); font-size: 13px; }
+    .warning { margin-top: 10px; padding: 11px 14px; background: var(--amber-soft); border-color: #efd38e; color: var(--amber); }
+    .signals { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; margin-top: 18px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: var(--paper); }
+    .signal { min-height: 150px; padding: 18px 20px; border-right: 1px solid var(--line); }
+    .signal:last-child { border-right: 0; }
+    .signal-label, .metric-label { color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; }
+    .signal-value { margin-top: 5px; font-size: 28px; font-weight: 820; letter-spacing: 0; }
+    .signal-note { min-height: 43px; margin-top: 3px; color: var(--muted); font-size: 12px; }
+    .meter-block { margin-top: 10px; }
+    .meter-label { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 12px; }
+    .meter-label strong { color: var(--ink); }
+    .meter { height: 6px; margin-top: 6px; overflow: hidden; border-radius: 999px; background: #e3eae6; }
+    .meter-fill { display: block; height: 100%; border-radius: inherit; background: var(--green); }
+    .meter-fill.amber { background: var(--coral); }
+    .meter-fill.blue { background: var(--blue); }
+    .meter-note { margin-top: 5px; color: var(--muted); font-size: 11px; }
+    .metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 10px; }
+    .metric { min-height: 95px; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: #f8faf8; }
+    .metric-value { margin-top: 5px; font-size: 21px; font-weight: 780; overflow-wrap: anywhere; }
+    .metric-note { margin-top: 4px; color: var(--muted); font-size: 11px; }
+    .panel { margin-top: 18px; padding: 22px; }
+    .panel > p { margin: 8px 0 12px; color: var(--muted); }
+    .callout { border-left: 4px solid var(--coral); }
+    .section-head { display: flex; justify-content: space-between; gap: 20px; align-items: flex-end; margin-bottom: 12px; }
+    .section-note { max-width: 460px; color: var(--muted); font-size: 12px; text-align: right; }
+    .good { color: var(--green) !important; }
+    ul { margin: 8px 0 0; padding-left: 22px; }
+    li + li { margin-top: 5px; }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; min-width: 670px; border-collapse: collapse; }
+    th, td { padding: 10px 9px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; white-space: nowrap; }
+    tbody tr:hover { background: #f5f8f5; }
+    code { color: #34534d; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+    .badge { display: inline-block; padding: 2px 7px; border: 1px solid var(--line); border-radius: 999px; background: #f4f6f4; color: var(--muted); font-size: 12px; line-height: 1.4; white-space: nowrap; }
+    .badge.measured, .badge.confirmed, .badge.dirty { background: var(--green-soft); border-color: #b9dfcc; color: var(--green); }
+    .badge.timeout, .badge.error, .badge.low { background: var(--red-soft); border-color: #efc4c4; color: var(--red); }
+    .badge.unknown, .badge.review_only { background: var(--amber-soft); border-color: #efd38e; color: var(--amber); }
+    .badge.strong_inference { background: var(--blue-soft); border-color: #c2d9e9; color: var(--blue); }
+    .inline-stats { display: flex; flex-wrap: wrap; gap: 10px 22px; margin: 0 0 14px; color: var(--muted); }
+    .inline-stats strong { color: var(--ink); font-size: 18px; }
+    details summary { cursor: pointer; color: var(--ink); font-weight: 780; }
+    details summary::marker { color: var(--green); }
+    .empty { color: var(--muted); font-style: italic; }
+    footer { margin-top: 22px; color: var(--muted); font-size: 12px; }
+    @media (max-width: 860px) { .hero { grid-template-columns: 1fr; } .status-card { max-width: 440px; } .signals { grid-template-columns: 1fr; } .signal { border-right: 0; border-bottom: 1px solid var(--line); } .signal:last-child { border-bottom: 0; } .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    @media (max-width: 620px) { .masthead-inner, main { padding-left: 14px; padding-right: 14px; } .hero { margin-left: -14px; margin-right: -14px; padding: 34px 20px; } .report-nav { margin-left: -14px; margin-right: -14px; padding-left: 14px; padding-right: 14px; } .masthead-meta { display: none; } .section-head { display: block; } .section-note { margin-top: 6px; text-align: left; } .metrics { grid-template-columns: 1fr 1fr; } .panel { padding: 16px; } }
+    @media print { body { background: #fff; } .masthead, .report-nav { display: none; } main { max-width: none; padding: 0; } .hero { margin: 0; } .panel, .metric, .notice, .signals { break-inside: avoid; } }
+    """
+
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Clean Your Data | Local Audit</title>
+  <style>{styles}</style>
+</head>
+<body>
+<div class="masthead">
+  <div class="masthead-inner">
+    <div class="brand"><span class="brand-mark">CYD</span><span>Clean Your Data</span></div>
+    <div class="masthead-meta">METADATA ONLY &middot; OFFLINE REPORT</div>
+  </div>
+</div>
+
+<main>
+  <header class="hero">
+    <div>
+      <p class="eyebrow">LOCAL STORAGE / AUDIT BRIEF</p>
+      <h1>Clean Your Data</h1>
+      <p class="lede">A readable map of what is accumulating, who owns it, and what needs review before anything moves.</p>
+      <div class="hero-meta">
+        <span class="tag">READ-ONLY</span>
+        <span class="tag">{("PATHS REDACTED" if settings.get("redact", True) else "PATHS NOT REDACTED")}</span>
+        <span class="tag">SCHEMA {html_escape(report.get("schema_version", "unknown"))}</span>
+      </div>
+    </div>
+    <div class="status-card">
+      <span class="status-icon {html_token(decision_tone)}">{"!" if decision_status == "review_only" else "OK"}</span>
+      <div>
+        <div class="decision-label">Decision state</div>
+        <div class="decision-value {html_token(decision_tone)}">{html_escape(decision_label)}</div>
+        <div class="decision-copy"><strong>{html_escape(decision_heading)}</strong><br>{html_escape(decision_copy)}</div>
+      </div>
+    </div>
+  </header>
+
+  <nav class="report-nav" aria-label="Report sections">
+    <a href="#decision">Decision</a>
+    <a href="#signals">Signals</a>
+    <a href="#coverage">Coverage</a>
+    <a href="#targets">Largest areas</a>
+    <a href="#codex">Codex</a>
+    <a href="#git">Git</a>
+    <a href="#artifacts">Artifacts</a>
+    <a href="#ledger">Ledger</a>
+  </nav>
+
+  <div class="notice">Generated {html_escape(report.get("generated_at", "unknown"))} &middot; Scope {html_escape(settings.get("home", "~"))} &middot; No files were modified, moved, or deleted.</div>
+  {warning_html}
+
+  <section id="decision" class="panel callout">
+    <div class="section-head">
+      <div><p class="section-kicker">00 / DECISION</p><h2>What needs attention first</h2></div>
+      <div class="section-note">The scanner reports evidence. It never turns evidence into permission to delete.</div>
+    </div>
+    {blocker_content}
+  </section>
+
+  <section id="signals" class="signals" aria-label="Audit signals">
+    <div class="signal">
+      <div class="signal-label">Evidence coverage</div>
+      <div class="signal-value">{measured_targets} / {len(target_areas)}</div>
+      <div class="signal-note">Target rows with a measured size</div>
+      {html_meter("Measured", target_percentage, target_note, decision_tone)}
+    </div>
+    <div class="signal">
+      <div class="signal-label">Disk allocation</div>
+      <div class="signal-value">{html_escape(disk.get("used", "unknown"))}</div>
+      <div class="signal-note">{html_escape(disk.get("free", "unknown"))} free of {html_escape(disk.get("total", "unknown"))}</div>
+      {html_meter("Used", disk_used_percentage, "Filesystem allocation estimate", "blue")}
+    </div>
+    <div class="signal">
+      <div class="signal-label">Artifact evidence</div>
+      <div class="signal-value">{len(artifacts)}</div>
+      <div class="signal-note">Rebuildable or review candidates; not additive totals</div>
+      {html_meter("Measured", artifact_percentage, artifact_note, "green")}
+    </div>
+  </section>
+
+  <section class="metrics" aria-label="Audit summary">
+    {html_metric("Findings", len(findings), "evidence-linked review items")}
+    {html_metric("Git repositories", git_value, f"{dirty_repo_count} dirty repositories")}
+    {html_metric("Dirty changes", dirty_change_count, "preserve before migration")}
+    {html_metric("Artifacts", len(artifacts), "candidate subsets")}
+    {html_metric("Codex outputs", codex_value, codex_note)}
+    {html_metric("Scope", settings.get("home", "~"), f"{target_note}; {html_escape(settings.get('mode', 'quick'))} mode")}
+  </section>
+
+  <section id="summary" class="panel">
+    <div class="section-head">
+      <div><p class="section-kicker">SUMMARY / PATTERNS</p><h2>What the evidence suggests</h2></div>
+      <div class="section-note">Heuristics explain where to look. They do not authorize cleanup.</div>
+    </div>
+    <ul>{recommendation_items}</ul>
+  </section>
+
+  <section id="coverage" class="panel">
+    <div class="section-head">
+      <div><p class="section-kicker">01 / EVIDENCE</p><h2>Coverage</h2></div>
+      <div class="section-note">Measured, timeout, error, and not-found states stay separate; unknown is never zero.</div>
+    </div>
+    {html_table(["Status", "Matches", "Unknown", "Measured", "Target"], coverage_rows)}
+  </section>
+
+  <section id="targets" class="panel">
+    <div class="section-head">
+      <div><p class="section-kicker">02 / WHERE</p><h2>Largest target areas</h2></div>
+      <div class="section-note">Start here for review, not deletion. A large directory may still be user data.</div>
+    </div>
+    {html_table(["Size", "Status", "Category", "Risk", "Path", "Target"], target_rows)}
+  </section>
+
+  <section id="apps" class="panel">
+    <details open>
+      <summary>App-managed and cloud-sync data</summary>
+      <p>Handle these through the owning app or sync provider. Do not bulk-delete their containers.</p>
+      {app_content}
+    </details>
+  </section>
+
+  <section id="codex" class="panel">
+    <details open>
+      <summary>Codex workspaces</summary>
+      {codex_content}
+    </details>
+  </section>
+
+  <section id="children" class="panel">
+    <details>
+      <summary>Workspace children</summary>
+      <p>Immediate child directories above the configured size threshold. This remains metadata-only.</p>
+      {children_html}
+    </details>
+  </section>
+
+  <section id="git" class="panel">
+    <details open>
+      <summary>Git distribution</summary>
+      <p>{html_escape(git_status_note)}</p>
+      {html_table(["Repositories", "Dirty repos", "Dirty changes", "Bucket"], git_rows, "No Git buckets were reported.")}
+    </details>
+  </section>
+
+  <section id="artifacts" class="panel">
+    <details open>
+      <summary>Rebuildable or review artifacts</summary>
+      <p>Artifact rows can be subsets of parent workspace totals. Do not add them together as reclaimable space.</p>
+      {html_table(["Size", "Status", "Risk", "Name", "Path", "In parent", "Rebuild hint"], artifact_rows, "No artifact candidates were reported.")}
+    </details>
+  </section>
+
+  <section id="ledger" class="panel">
+    <details>
+      <summary>Decision ledger</summary>
+      <p>Every finding links to evidence in the JSON report. This table is for review; the scanner does not execute the recommendation.</p>
+      {html_table(["Status", "Confidence", "Category", "Owner", "Path", "Recommended review"], finding_rows, "No findings were reported.")}
+    </details>
+  </section>
+
+  <footer>Clean Your Data &middot; schema {html_escape(report.get("schema_version", "unknown"))} &middot; Offline HTML; review exact paths before sharing.</footer>
+</main>
+</body>
+</html>
+"""
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Read-only local file organization audit.")
     parser.add_argument("--home", default=str(Path.home()), help="Home directory to analyze. Defaults to current user home.")
     parser.add_argument("--mode", choices=["quick", "full"], default="quick", help="Quick scans known roots; full also scans artifacts.")
-    parser.add_argument("--format", choices=["markdown", "json"], default="markdown", help="Output format.")
+    parser.add_argument("--format", choices=["markdown", "json", "html"], default="markdown", help="Output format.")
     parser.add_argument("--output", help="Write report to this path instead of stdout.")
     parser.add_argument("--no-redact", action="store_true", help="Include absolute home path in report metadata and errors. Redaction is enabled by default.")
     parser.add_argument("--min-mb", type=float, default=100.0, help="Minimum child/artifact size to report.")
@@ -1203,6 +1697,8 @@ def main(argv: list[str]) -> int:
     report["duration_seconds"] = round(time.time() - start, 3)
     if args.format == "json":
         output = json.dumps(report, ensure_ascii=False, indent=2)
+    elif args.format == "html":
+        output = render_html(report)
     else:
         output = render_markdown(report)
     if args.output:

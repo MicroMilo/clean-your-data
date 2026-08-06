@@ -31,6 +31,16 @@ From the skill directory, run:
 python3 scripts/audit_local_files.py --format markdown
 ```
 
+For a human-friendly offline report that can be opened or printed in a browser:
+
+```bash
+python3 scripts/audit_local_files.py \
+  --format html \
+  --output local-file-audit.html
+```
+
+Prefer HTML for a person reviewing one audit, JSON for Agent handoff or snapshot comparison, and Markdown when plain text is more convenient. The HTML file is self-contained and makes no network requests.
+
 Use quick mode for the first pass. It inventories known roots and skips expensive Git and child-directory discovery.
 
 For a deeper decision about migration or cleanup, run:
@@ -109,6 +119,8 @@ python3 scripts/compare_reports.py before.json after.json
 ```
 
 The comparison script reports changes in disk usage, target areas, Codex counts, Git buckets, and artifacts. It preserves whatever redaction was present in the input reports and never reads file contents.
+
+HTML is a presentation of one local report, not a public data export. Review paths and project names before sharing it.
 
 ## Maintainer Evaluation Loop
 
