@@ -2,16 +2,49 @@
 
 [![CI](https://github.com/MicroMilo/clean-your-data/actions/workflows/test.yml/badge.svg)](https://github.com/MicroMilo/clean-your-data/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/MicroMilo/clean-your-data?display_name=tag)](https://github.com/MicroMilo/clean-your-data/releases)
 
 <p align="center">
   <img src="assets/github-social-preview-v1.png" alt="Clean Your Data: a safe map before you clean" width="100%">
 </p>
 
-**Your files are everywhere. Get a safe map before you touch anything.**
+**A privacy-first disk investigator for AI agents.**
 
-**Clean Your Data** turns local file sprawl into a privacy-preserving, decision-ready audit. It finds where data accumulates across Desktop, Downloads, AI workspaces, Git repositories, chat and collaboration apps, cloud-sync folders, and rebuildable project artifacts.
+Ask what is safe to review before deleting files.
 
-It is read-only by default. Scans are metadata-only by default; the TUI can show a small, local preview for the selected file. It does not upload data or delete files.
+**Clean Your Data** turns local file sprawl into a decision-ready map. It helps an agent explain what is taking space, what owns it, what is rebuildable, and what should be reviewed before any cleanup.
+
+<p align="center">
+  <img src="assets/clean-your-data-demo.gif" alt="Real terminal demo of Clean Your Data" width="100%">
+</p>
+
+<p align="center">
+  <a href="assets/clean-your-data-demo.mp4">Watch or download the 20-second MP4 demo</a>
+</p>
+
+## Start In 3 Steps
+
+```bash
+# 1. Get the skill
+git clone https://github.com/MicroMilo/clean-your-data.git
+
+# 2. Install it for Codex
+mkdir -p ~/.codex/skills
+cp -R clean-your-data/audit-local-files ~/.codex/skills/audit-local-files
+
+# 3. Explore a path you choose (replace PATH)
+python3 ~/.codex/skills/audit-local-files/scripts/audit_local_files.py \
+  --tui --path PATH --focus-depth 2
+```
+
+The demo uses a sanitized copy of this repository under `~/audit-local-files`. It does not use a real user's home directory, `~/github`, or `node_modules`.
+
+## Privacy Boundary
+
+- Read-only by default. The initial map reads metadata, not file contents.
+- No uploads and no cleanup actions. The TUI preview is local and bounded to 4 KB and 14 lines.
+- Exact duplicate matching is opt-in and hashes candidate files locally; raw hashes are not written to reports.
+- Home paths are redacted to `~` by default. Review project and folder names before sharing a report.
 
 ## Give It To Your Agent
 
