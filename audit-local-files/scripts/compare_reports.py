@@ -142,6 +142,57 @@ def diff_coverage(before_rows: list[dict[str, Any]], after_rows: list[dict[str, 
     return result
 
 
+def diff_duplicates(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
+    before_duplicates = before.get("duplicates") or {}
+    after_duplicates = after.get("duplicates") or {}
+    before_groups = {
+        str(row.get("duplicate_group_id")): row
+        for row in before_duplicates.get("groups", [])
+        if row.get("duplicate_group_id")
+    }
+    after_groups = {
+        str(row.get("duplicate_group_id")): row
+        for row in after_duplicates.get("groups", [])
+        if row.get("duplicate_group_id")
+    }
+    before_bytes = before_duplicates.get("potential_duplicate_bytes")
+    after_bytes = after_duplicates.get("potential_duplicate_bytes")
+    both_complete = before_duplicates.get("status") == after_duplicates.get("status") == "complete"
+    return {
+        "before_enabled": bool(before_duplicates.get("enabled")),
+        "after_enabled": bool(after_duplicates.get("enabled")),
+        "before_status": before_duplicates.get("status", "unknown"),
+        "after_status": after_duplicates.get("status", "unknown"),
+        "before_group_count": len(before_groups),
+        "after_group_count": len(after_groups),
+        "group_delta": len(after_groups) - len(before_groups),
+        "before_potential_duplicate_bytes": before_bytes if isinstance(before_bytes, int) else None,
+        "after_potential_duplicate_bytes": after_bytes if isinstance(after_bytes, int) else None,
+        "potential_duplicate_delta_bytes": after_bytes - before_bytes if both_complete and isinstance(before_bytes, int) and isinstance(after_bytes, int) else None,
+        "added_groups": sorted(set(after_groups) - set(before_groups)),
+        "removed_groups": sorted(set(before_groups) - set(after_groups)),
+    }
+
+
+def diff_space_map(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
+    before_map = before.get("space_map") or {}
+    after_map = after.get("space_map") or {}
+    before_roots = set(str(item) for item in before_map.get("roots", []) if item)
+    after_roots = set(str(item) for item in after_map.get("roots", []) if item)
+    return {
+        "before_enabled": bool(before_map.get("enabled")),
+        "after_enabled": bool(after_map.get("enabled")),
+        "before_status": before_map.get("status", "unknown"),
+        "after_status": after_map.get("status", "unknown"),
+        "before_node_count": int(before_map.get("node_count", len(before_map.get("nodes", [])))),
+        "after_node_count": int(after_map.get("node_count", len(after_map.get("nodes", [])))),
+        "node_delta": int(after_map.get("node_count", len(after_map.get("nodes", []))))
+        - int(before_map.get("node_count", len(before_map.get("nodes", [])))),
+        "added_roots": sorted(after_roots - before_roots),
+        "removed_roots": sorted(before_roots - after_roots),
+    }
+
+
 def compare(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
     before_disk = before.get("disk", {})
     after_disk = after.get("disk", {})
@@ -160,7 +211,7 @@ def compare(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
         for key in ("date_dir_count", "work_dir_count", "outputs_dir_count")
     }
     return {
-        "schema_version": "1.1",
+        "schema_version": "1.3",
         "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "before_generated_at": before.get("generated_at"),
         "after_generated_at": after.get("generated_at"),
@@ -179,6 +230,8 @@ def compare(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
             (after.get("git") or {}).get("buckets", []),
         ),
         "artifacts": diff_rows(before.get("artifacts", []), after.get("artifacts", [])),
+        "duplicates": diff_duplicates(before, after),
+        "space_map": diff_space_map(before, after),
         "action_gate": {
             "before": (before.get("action_gate") or {}).get("status", "unknown"),
             "after": (after.get("action_gate") or {}).get("status", "unknown"),
@@ -255,6 +308,30 @@ def render_markdown(result: dict[str, Any]) -> str:
         ]
         lines.append(markdown_table(["Change", "Status", "Name", "Path"], rows))
         lines.append("")
+    duplicates = result.get("duplicates") or {}
+    lines.append("## Exact Duplicate Changes")
+    lines.append("")
+    lines.append(
+        f"- Scan: `{duplicates.get('before_status', 'unknown')}` -> `{duplicates.get('after_status', 'unknown')}`; groups `{duplicates.get('before_group_count', 0)}` -> `{duplicates.get('after_group_count', 0)}`"
+    )
+    lines.append(f"- Potential logical bytes: `{human_size(duplicates.get('potential_duplicate_delta_bytes'))}`")
+    if duplicates.get("added_groups"):
+        lines.append(f"- New opaque group IDs: {', '.join(f'`{item}`' for item in duplicates['added_groups'][:20])}")
+    if duplicates.get("removed_groups"):
+        lines.append(f"- Removed opaque group IDs: {', '.join(f'`{item}`' for item in duplicates['removed_groups'][:20])}")
+    lines.append("")
+    space_map = result.get("space_map") or {}
+    lines.append("## Interactive Map")
+    lines.append("")
+    lines.append(
+        f"- Status: `{space_map.get('before_status', 'unknown')}` -> `{space_map.get('after_status', 'unknown')}`; "
+        f"areas `{space_map.get('before_node_count', 0)}` -> `{space_map.get('after_node_count', 0)}`"
+    )
+    if space_map.get("added_roots"):
+        lines.append(f"- Newly selected roots: {', '.join(f'`{item}`' for item in space_map['added_roots'][:20])}")
+    if space_map.get("removed_roots"):
+        lines.append(f"- Roots no longer selected: {', '.join(f'`{item}`' for item in space_map['removed_roots'][:20])}")
+    lines.append("")
     lines.extend(
         [
             "## Suggested Review",

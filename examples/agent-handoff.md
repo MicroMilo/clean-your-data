@@ -36,3 +36,13 @@ python3 audit-local-files/scripts/audit_local_files.py \
 ```
 
 For a recurring check, save JSON output before and after a period of normal use and run `audit-local-files/scripts/compare_reports.py`.
+
+For a closer, conversational review of one directory, ask the agent to run:
+
+```bash
+python3 audit-local-files/scripts/audit_local_files.py \
+  --path /path/to/review \
+  --tui --focus-depth 2
+```
+
+Then select an area in the terminal, press `a` to ask Codex, and press `c` to copy its metadata-only context. The selected file's small local preview is not sent to Codex. Set `CLEAN_YOUR_DATA_AI_COMMAND` only when a different trusted local command should answer inside the TUI.

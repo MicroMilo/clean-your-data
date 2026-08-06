@@ -1,0 +1,71 @@
+CLEAN YOUR DATA / TERMINAL EXPLORER
+Scope: ~/Documents/projects/atlas  |  Map: Complete  |  Decision: Review first  |  AI: Codex
+READ ONLY  |  Metadata scan  |  Selected text files show a small local preview
+UP/DOWN move   gg top   G bottom   PgUp/PgDn scroll   ENTER open/close   A ask Codex   ? help   Q quit
+--------------------------------------------------------------------------------
+
+* v atlas/  12.0 KB                              INSPECTOR
+  v   reports/  8.0 KB                           ABOUT THIS AREA
+      decision.md  4.0 KB                        ABOUT THIS AREA
+  v   src/  4.0 KB                               Path: ~/Documents/projects/atlas/reports/
+      app.py  4.0 KB                             Space: 4.0 KB
+  >   build/  4.0 KB                             Last changed: 2026-08-06 10:22:00
+                                                    Kind: Folder
+                                                    Area: Selected area
+                                                    Measurement: Checked
+
+                                                WHAT WE KNOW
+                                                We checked this folder's name, size, dates,
+                                                and visible entries. We did not open file
+                                                contents, so its exact purpose is not confirmed.
+
+                                                NEXT STEP
+                                                Press A to open a question box beside this area.
+
+Selected area changed. Press A to ask Codex about it.
+Press ? for help. Q exits the explorer without changing files.
+
+When app.py is selected:
+
+                                                CONTENT PREVIEW
+                                                from pathlib import Path
+
+                                                def main():
+                                                    print("atlas")
+
+                                                The preview is local, limited, and not sent to Codex.
+
+Example interaction:
+
+  A -> the question box opens in the inspector beside the selected file/folder:
+
+      +--------------------------------------+
+      | ASK CODEX  Enter send  Esc cancel    |
+      | what is this file used for?           |
+      +--------------------------------------+
+
+  Enter -> send the question.  Esc or Ctrl-C -> cancel question entry.
+
+  While Codex is working:
+
+  AI: Codex thinking /
+  CODEX THINKING /
+  You can keep moving through the tree. Esc or Ctrl-C stops the request.
+
+  The TUI prepares:
+
+  Path: ~/Documents/projects/atlas/reports
+  Name: reports
+  Kind: folder
+  Size: 8.0 KB
+  Last changed: 2026-08-06 10:22:00
+  Area: Selected area
+  Measurement: measured
+
+  After the answer returns, it remains attached to reports/ even if you
+  move to another folder and come back.
+
+  Q -> quit the whole explorer. While typing a question, Q is ordinary text;
+       use Esc or Ctrl-C to leave the question box first.
+
+  Mouse click -> select. Double-click a folder -> open it. Scroll wheel -> move.

@@ -11,12 +11,12 @@ from __future__ import annotations
 import argparse
 import glob
 import hashlib
-import html
 import json
 import os
 import platform
 import re
 import shutil
+import stat as stat_module
 import subprocess
 import sys
 import time
@@ -31,6 +31,11 @@ FULL_TARGET_TIMEOUT_SECONDS = 20
 QUICK_CHILD_TIMEOUT_SECONDS = 8
 FULL_CHILD_TIMEOUT_SECONDS = 30
 GIT_TIMEOUT_SECONDS = 4
+DUPLICATE_HASH_CHUNK_BYTES = 1024 * 1024
+DUPLICATE_DEFAULT_TIME_BUDGET_SECONDS = 60
+DUPLICATE_DEFAULT_MAX_BYTES = 10 * 1024**3
+DUPLICATE_DEFAULT_FILE_LIMIT = 10000
+DUPLICATE_DEFAULT_MIN_BYTES = 1 * 1024**2
 
 ARTIFACT_NAMES = {
     "node_modules": ("cache", "rebuildable", "reinstall dependencies"),
@@ -318,17 +323,19 @@ def owner_for_category(category: str) -> str:
         "workspace": "project or agent workflow",
         "cache": "project toolchain",
         "deliverable": "user or project library",
+        "duplicate": "user or project workflow",
     }.get(category, "unknown")
 
 
 def action_for_category(category: str) -> str:
     return {
-        "app-state": "Use the owning app's storage controls; do not delete the container.",
-        "cloud-sync": "Check sync status and retention before changing files.",
-        "inbox": "Review and apply an age policy before archiving.",
-        "workspace": "Review and promote durable outputs before archiving.",
-        "cache": "Confirm the rebuild command before removal.",
-        "deliverable": "Promote the selected output to a stable library or project root.",
+        "app-state": "Open the app's own storage settings. Avoid deleting this folder directly.",
+        "cloud-sync": "Check that syncing is finished and that another device does not rely on this copy.",
+        "inbox": "Keep what you still need, then move older items to an archive.",
+        "workspace": "Keep finished work in a stable folder. Archive active work only after checking it.",
+        "cache": "Check how the project recreates this folder before removing it.",
+        "deliverable": "Move the finished result to a stable library or project folder.",
+        "duplicate": "Compare the copies, choose the one you recognize, and review the others before archiving.",
     }.get(category, "Review shallow metadata before deciding.")
 
 
@@ -340,6 +347,7 @@ def rollback_for_category(category: str) -> str:
         "workspace": "Restore from the archive, Git, or the original project location.",
         "cache": "Reinstall dependencies or rebuild the project.",
         "deliverable": "Restore from the stable library or backup.",
+        "duplicate": "Restore an archived copy or Trash item; keep the verified canonical copy.",
     }.get(category, "No rollback is defined until the owner is identified.")
 
 
@@ -371,6 +379,57 @@ def du_size(path: Path, timeout: int) -> tuple[Optional[int], str, bool]:
         except Exception as exc:  # pragma: no cover - defensive fallback
             return None, str(exc), False
     return fallback_size(path)
+
+
+def path_cache_key(path: Path) -> str:
+    try:
+        return str(path.resolve())
+    except Exception:
+        return str(path)
+
+
+def stat_size(path: Path) -> tuple[Optional[int], str, bool]:
+    """Measure one non-directory entry without starting a subprocess."""
+    try:
+        info = path.lstat()
+        if stat_module.S_ISLNK(info.st_mode):
+            return None, "symlink", False
+        return int(getattr(info, "st_blocks", 0) * 512 or info.st_size), "", False
+    except OSError as exc:
+        return None, str(exc), False
+
+
+def bulk_du_sizes(root: Path, max_depth: int, timeout: int) -> dict[str, tuple[Optional[int], str, bool]]:
+    """Measure directory sizes in one bounded du traversal for the TUI map."""
+    if os.name == "nt" or not shutil.which("du") or not root.is_dir():
+        return {}
+    command_timeout = timeout if timeout > 0 else None
+    try:
+        proc = subprocess.run(
+            ["du", "-k", "-d", str(max(0, max_depth)), str(root)],
+            capture_output=True,
+            text=True,
+            timeout=command_timeout,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    if proc.returncode != 0:
+        return {}
+    sizes: dict[str, tuple[Optional[int], str, bool]] = {}
+    for line in proc.stdout.splitlines():
+        size_text, separator, raw_path = line.partition("\t")
+        if not separator:
+            parts = line.split(None, 1)
+            if len(parts) != 2:
+                continue
+            size_text, raw_path = parts
+        try:
+            size = int(size_text) * 1024
+        except ValueError:
+            continue
+        sizes[path_cache_key(Path(raw_path))] = (size, "", False)
+    return sizes
 
 
 def fallback_size(path: Path) -> tuple[Optional[int], str, bool]:
@@ -791,10 +850,638 @@ def path_is_within(child: str, parent: str) -> bool:
     return child == normalized_parent or child.startswith(normalized_parent + "/")
 
 
+def safe_report_path(path: Path, home: Path, redact: bool) -> str:
+    """Keep explicitly selected paths private even when they are outside home."""
+    if not redact:
+        return str(path)
+    try:
+        resolved = path.resolve()
+        relative = resolved.relative_to(home.resolve())
+        return "~" if not relative.parts else "~/" + str(relative)
+    except ValueError:
+        return f"<external>/{path.name or 'root'}"
+    except Exception:
+        return "<unavailable>"
+
+
+def duplicate_excluded_scopes() -> list[dict[str, str]]:
+    return [
+        {
+            "category": "app-state",
+            "label": "App-managed storage",
+            "reason": "Excluded by default; select a specific root with --duplicate-root only when its owner is understood.",
+        },
+        {
+            "category": "cloud-sync",
+            "label": "Cloud-sync roots",
+            "reason": "Excluded by default; local copies and sync-provider retention are not the same cleanup decision.",
+        },
+        {
+            "category": "cache",
+            "label": "Rebuildable directories",
+            "reason": "Known dependency and build directories are skipped during duplicate traversal.",
+        },
+        {
+            "category": "symlink",
+            "label": "Symlink targets",
+            "reason": "Symlinks are not followed, preventing the same tree from being scanned through an alias.",
+        },
+    ]
+
+
+def duplicate_scope_index(home: Path) -> list[dict[str, Any]]:
+    index: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for target in TARGETS:
+        for pattern in target.patterns:
+            for candidate in expand_pattern(pattern, home):
+                if not candidate.exists() or not candidate.is_dir():
+                    continue
+                try:
+                    resolved = candidate.resolve()
+                except Exception:
+                    continue
+                key = (str(resolved), target.label)
+                if key in seen:
+                    continue
+                seen.add(key)
+                index.append(
+                    {
+                        "root": resolved,
+                        "label": target.label,
+                        "category": target.category,
+                    }
+                )
+    return index
+
+
+def duplicate_context(path: Path, scope_index: list[dict[str, Any]]) -> dict[str, str]:
+    try:
+        resolved = path.resolve()
+    except Exception:
+        resolved = path
+    matches = [
+        item
+        for item in scope_index
+        if path_is_within(str(resolved), str(item["root"]))
+    ]
+    if not matches:
+        return {"category": "unknown", "label": "Unknown scope"}
+    specificity = {"Codex date workspaces": 3, "AI and coding agents": 2}
+    selected = max(
+        matches,
+        key=lambda item: (len(Path(item["root"]).parts), specificity.get(item["label"], 1)),
+    )
+    return {"category": selected["category"], "label": selected["label"]}
+
+
+def duplicate_scan_roots(home: Path, extra_roots: list[str]) -> tuple[list[Path], list[Path], list[Path]]:
+    requested = workspace_roots(home)
+    for raw_root in extra_roots:
+        requested.append(Path(raw_root).expanduser())
+
+    existing: list[Path] = []
+    missing: list[Path] = []
+    seen: set[str] = set()
+    for candidate in requested:
+        try:
+            resolved = candidate.resolve()
+        except Exception:
+            resolved = candidate
+        key = str(resolved)
+        if key in seen:
+            continue
+        seen.add(key)
+        if resolved.exists() and resolved.is_dir():
+            existing.append(resolved)
+        else:
+            missing.append(resolved)
+
+    # Prefer a selected parent root over a nested default root so files are not
+    # visited twice when a user explicitly widens the scope.
+    normalized: list[Path] = []
+    for candidate in sorted(existing, key=lambda item: (len(item.parts), str(item))):
+        if any(path_is_within(str(candidate), str(parent)) for parent in normalized):
+            continue
+        normalized.append(candidate)
+    return normalized, missing, requested
+
+
+def hash_duplicate_file(
+    path: Path,
+    deadline: Optional[float],
+    max_bytes: int,
+    bytes_hashed: int,
+) -> tuple[str, Optional[str], int, str]:
+    """Hash one stable regular file without reading beyond the duplicate budget."""
+    try:
+        before = path.lstat()
+        if not stat_module.S_ISREG(before.st_mode) or path.is_symlink():
+            return "error", None, 0, "not a regular file"
+        size = int(before.st_size)
+        if max_bytes > 0 and bytes_hashed + size > max_bytes:
+            return "limit", None, 0, "duplicate byte budget reached"
+        digest = hashlib.sha256()
+        consumed = 0
+        with path.open("rb") as handle:
+            while True:
+                if budget_exhausted(deadline):
+                    return "timeout", None, consumed, "duplicate hash time budget reached"
+                chunk = handle.read(DUPLICATE_HASH_CHUNK_BYTES)
+                if not chunk:
+                    break
+                digest.update(chunk)
+                consumed += len(chunk)
+        after = path.lstat()
+        if (
+            before.st_size != after.st_size
+            or before.st_dev != after.st_dev
+            or before.st_ino != after.st_ino
+        ):
+            return "error", None, consumed, "file changed while hashing"
+        if consumed != size:
+            return "error", None, consumed, "file size changed while hashing"
+        return "ok", digest.hexdigest(), consumed, ""
+    except Exception as exc:
+        return "error", None, 0, str(exc)
+
+
+def scan_duplicates(
+    roots: list[Path],
+    missing_roots: list[Path],
+    requested_roots: list[Path],
+    home: Path,
+    min_bytes: int,
+    time_budget: int,
+    max_bytes: int,
+    file_limit: int,
+    redact: bool,
+) -> dict[str, Any]:
+    """Find exact duplicate files using size buckets followed by local SHA-256."""
+    deadline = time.time() + time_budget if time_budget > 0 else None
+    scope_index = duplicate_scope_index(home)
+    size_groups: dict[int, list[dict[str, Any]]] = {}
+    errors: list[str] = []
+    files_seen = 0
+    status = "complete"
+
+    def record_error(path: Optional[Path], message: str) -> None:
+        if len(errors) >= 20:
+            return
+        rendered = f"{safe_report_path(path, home, redact)}: {message}" if path else message
+        errors.append(rendered)
+
+    def walk_error(exc: OSError) -> None:
+        record_error(Path(exc.filename) if exc.filename else None, str(exc))
+
+    for root in roots:
+        if budget_exhausted(deadline):
+            status = "timeout"
+            break
+        try:
+            walker = os.walk(root, topdown=True, followlinks=False, onerror=walk_error)
+            for current, dirs, filenames in walker:
+                if budget_exhausted(deadline):
+                    status = "timeout"
+                    break
+                current_path = Path(current)
+                dirs[:] = sorted(
+                    dirname
+                    for dirname in dirs
+                    if not should_skip_dir(current_path / dirname)
+                    and not (current_path / dirname).is_symlink()
+                )
+                for filename in sorted(filenames):
+                    if budget_exhausted(deadline):
+                        status = "timeout"
+                        break
+                    path = current_path / filename
+                    try:
+                        file_stat = path.lstat()
+                    except OSError as exc:
+                        record_error(path, str(exc))
+                        status = "error"
+                        continue
+                    if path.is_symlink() or not stat_module.S_ISREG(file_stat.st_mode):
+                        continue
+                    files_seen += 1
+                    size = int(file_stat.st_size)
+                    if size < min_bytes:
+                        continue
+                    size_groups.setdefault(size, []).append(
+                        {
+                            "path": path,
+                            "size_bytes": size,
+                            "st_dev": file_stat.st_dev,
+                            "st_ino": file_stat.st_ino,
+                        }
+                    )
+                if status in {"timeout"}:
+                    break
+            if status == "timeout":
+                break
+        except Exception as exc:  # pragma: no cover - defensive filesystem guard
+            status = "error"
+            record_error(root, str(exc))
+
+    candidate_groups = [
+        entries
+        for _size, entries in size_groups.items()
+        if len(entries) > 1
+    ]
+    candidate_groups.sort(key=lambda entries: (-entries[0]["size_bytes"], str(entries[0]["path"])))
+    candidate_files = sum(len(entries) for entries in candidate_groups)
+    hashed_files = 0
+    bytes_hashed = 0
+    hashed_groups: dict[tuple[int, str], list[dict[str, Any]]] = {}
+
+    for entries in candidate_groups:
+        for entry in sorted(entries, key=lambda item: str(item["path"])):
+            if budget_exhausted(deadline):
+                status = "timeout"
+                break
+            if file_limit > 0 and hashed_files >= file_limit:
+                status = "limit"
+                break
+            hash_status, digest, consumed, error = hash_duplicate_file(
+                entry["path"], deadline, max_bytes, bytes_hashed
+            )
+            if hash_status == "ok" and digest:
+                entry = {**entry, "digest": digest}
+                hashed_groups.setdefault((entry["size_bytes"], digest), []).append(entry)
+                hashed_files += 1
+                bytes_hashed += consumed
+                continue
+            if consumed:
+                bytes_hashed += consumed
+            if hash_status == "timeout":
+                status = "timeout"
+                break
+            if hash_status == "limit":
+                status = "limit"
+                break
+            status = "error"
+            record_error(entry["path"], error or "unable to hash file")
+        if status in {"timeout", "limit"}:
+            break
+
+    groups: list[dict[str, Any]] = []
+    for (size_bytes, digest), entries in hashed_groups.items():
+        if len(entries) < 2:
+            continue
+        path_rows: list[dict[str, Any]] = []
+        inode_counts: dict[tuple[int, int], int] = {}
+        for entry in entries:
+            inode_key = (entry["st_dev"], entry["st_ino"])
+            inode_counts[inode_key] = inode_counts.get(inode_key, 0) + 1
+        for entry in sorted(entries, key=lambda item: str(item["path"])):
+            context = duplicate_context(entry["path"], scope_index)
+            inode_key = (entry["st_dev"], entry["st_ino"])
+            path_rows.append(
+                {
+                    "path": safe_report_path(entry["path"], home, redact),
+                    "context": context["category"],
+                    "scope": context["label"],
+                    "size_bytes": size_bytes,
+                    "human_size": human_size(size_bytes),
+                    "modified_at": mtime_iso(entry["path"]),
+                    "hardlink_alias": inode_counts[inode_key] > 1,
+                }
+            )
+        independent_copy_count = len(inode_counts)
+        potential_bytes = size_bytes * max(independent_copy_count - 1, 0)
+        priority = {"workspace": 4, "cloud-sync": 3, "inbox": 2, "unknown": 1, "app-state": 0}
+        canonical = min(
+            path_rows,
+            key=lambda row: (-priority.get(row["context"], 1), row["path"]),
+        )
+        groups.append(
+            {
+                "duplicate_group_id": stable_id("duplicate", f"{size_bytes}:{digest}"),
+                "status": "exact",
+                "hash_algorithm": "sha256",
+                "byte_kind": "logical_bytes",
+                "size_bytes": size_bytes,
+                "human_size": human_size(size_bytes),
+                "file_count": len(path_rows),
+                "independent_copy_count": independent_copy_count,
+                "hardlink_alias_count": len(path_rows) - independent_copy_count,
+                "potential_duplicate_bytes": potential_bytes,
+                "potential_duplicate_size": human_size(potential_bytes),
+                "canonical_candidate_path": canonical["path"],
+                "canonical_candidate_context": canonical["context"],
+                "canonical_reason": "Prefer the workspace-context copy as a review candidate; verify references before archiving anything.",
+                "paths": path_rows,
+            }
+        )
+    groups.sort(key=lambda group: (-group["potential_duplicate_bytes"], group["duplicate_group_id"]))
+    if not roots:
+        status = "not_found"
+    elif missing_roots and status == "complete":
+        status = "error"
+        for missing in missing_roots:
+            record_error(missing, "requested duplicate root was not found")
+
+    return {
+        "enabled": True,
+        "status": status,
+        "hash_algorithm": "sha256",
+        "byte_kind": "logical_bytes",
+        "roots": [safe_report_path(root, home, redact) for root in roots],
+        "requested_roots": [safe_report_path(root, home, redact) for root in requested_roots],
+        "missing_roots": [safe_report_path(root, home, redact) for root in missing_roots],
+        "excluded_scopes": duplicate_excluded_scopes(),
+        "min_bytes": min_bytes,
+        "time_budget": time_budget,
+        "max_bytes": max_bytes,
+        "file_limit": file_limit,
+        "files_seen": files_seen,
+        "candidate_files": candidate_files,
+        "hashed_files": hashed_files,
+        "bytes_hashed": bytes_hashed,
+        "errors": errors,
+        "groups": groups,
+        "group_count": len(groups),
+        "potential_duplicate_bytes": sum(group["potential_duplicate_bytes"] for group in groups),
+        "potential_duplicate_size": human_size(sum(group["potential_duplicate_bytes"] for group in groups)),
+    }
+
+
+def annotate_duplicate_overlaps(
+    duplicates: dict[str, Any],
+    records: list[dict[str, Any]],
+    artifacts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Add parent-container context without counting parent and child bytes together."""
+    target_labels = [(row.get("path", ""), row.get("label", "")) for row in records]
+    artifact_paths = [row.get("path", "") for row in artifacts]
+    for group in duplicates.get("groups", []):
+        contexts: dict[str, int] = {}
+        parent_labels: set[str] = set()
+        artifact_parents: set[str] = set()
+        contains_cloud_sync = False
+        hardlink_alias = False
+        for row in group.get("paths", []):
+            context = row.get("context", "unknown")
+            contexts[context] = contexts.get(context, 0) + 1
+            contains_cloud_sync = contains_cloud_sync or context == "cloud-sync"
+            hardlink_alias = hardlink_alias or bool(row.get("hardlink_alias"))
+            path = row.get("path", "")
+            for target_path, label in target_labels:
+                if target_path and path_is_within(path, target_path) and label:
+                    parent_labels.add(label)
+            for artifact_path in artifact_paths:
+                if artifact_path and path_is_within(path, artifact_path):
+                    artifact_parents.add(artifact_path)
+        warnings: list[str] = []
+        if parent_labels:
+            warnings.append("These files sit inside a larger folder total. Do not add the numbers together.")
+        if artifact_parents:
+            warnings.append("One file is inside a rebuildable folder. Its space may already be counted above.")
+        if contains_cloud_sync:
+            warnings.append("One copy is in a cloud folder. Removing it may affect sync or another device.")
+        if hardlink_alias:
+            warnings.append("Some paths point to the same underlying file. They do not use extra space in the same way.")
+        group["contexts"] = contexts
+        group["parent_targets"] = sorted(parent_labels)
+        group["artifact_parents"] = sorted(artifact_parents)
+        group["contains_cloud_sync"] = contains_cloud_sync
+        group["overlap_warnings"] = warnings
+    return duplicates
+
+
+def focus_scan_roots(home: Path, extra_roots: list[str]) -> tuple[list[Path], list[Path], list[Path]]:
+    requested = [Path(raw).expanduser() for raw in extra_roots] if extra_roots else workspace_roots(home)
+    existing: list[Path] = []
+    missing: list[Path] = []
+    seen: set[str] = set()
+    for candidate in requested:
+        try:
+            resolved = candidate.resolve()
+        except Exception:
+            resolved = candidate
+        key = str(resolved)
+        if key in seen:
+            continue
+        seen.add(key)
+        if resolved.exists():
+            existing.append(resolved)
+        else:
+            missing.append(resolved)
+
+    normalized: list[Path] = []
+    for candidate in sorted(existing, key=lambda item: (len(item.parts), str(item))):
+        if any(path_is_within(str(candidate), str(parent)) for parent in normalized):
+            continue
+        normalized.append(candidate)
+    return normalized, missing, requested
+
+
+def scan_space_map(
+    roots: list[Path],
+    missing_roots: list[Path],
+    requested_roots: list[Path],
+    home: Path,
+    max_depth: int,
+    node_limit: int,
+    timeout: int,
+    time_budget: int,
+    redact: bool,
+    include_local_paths: bool = False,
+    allow_skipped_root: bool = False,
+) -> dict[str, Any]:
+    """Collect a bounded, metadata-only tree for an interactive report."""
+    deadline = time.time() + time_budget if time_budget > 0 else None
+    scope_index = duplicate_scope_index(home)
+    size_cache: dict[str, tuple[Optional[int], str, bool]] = {}
+    for root in roots:
+        if budget_exhausted(deadline):
+            break
+        size_cache.update(bulk_du_sizes(root, max_depth, timeout))
+
+    def size_for(path: Path) -> tuple[Optional[int], str, bool]:
+        cached = size_cache.get(path_cache_key(path))
+        if cached is not None:
+            return cached
+        try:
+            info = path.lstat()
+        except OSError as exc:
+            return None, str(exc), False
+        if not stat_module.S_ISDIR(info.st_mode):
+            return stat_size(path)
+        return du_size(path, timeout)
+
+    nodes: list[dict[str, Any]] = []
+    errors: list[str] = []
+    status = "complete"
+
+    def report_error(path: Optional[Path], message: str) -> None:
+        if len(errors) >= 20:
+            return
+        rendered = f"{safe_report_path(path, home, redact)}: {message}" if path else message
+        errors.append(rendered)
+
+    def context_for(path: Path, root: Path) -> dict[str, str]:
+        context = duplicate_context(path, scope_index)
+        if context["category"] == "unknown" and path_is_within(str(path), str(root)):
+            return {"category": "workspace", "label": "Selected area"}
+        return context
+
+    def add_node(
+        path: Path,
+        parent_id: Optional[str],
+        depth: int,
+        root: Path,
+        root_id: str,
+        measured: Optional[tuple[Optional[int], str, bool]] = None,
+    ) -> None:
+        nonlocal status
+        if len(nodes) >= node_limit:
+            status = "limit"
+            return
+        if budget_exhausted(deadline):
+            status = "partial"
+            return
+        try:
+            path_stat = path.lstat()
+        except OSError as exc:
+            status = "partial"
+            report_error(path, str(exc))
+            return
+        if path.is_symlink():
+            return
+        size, error, timed_out = measured if measured is not None else size_for(path)
+        measurement = measurement_status(size, error, timed_out)
+        if measurement != "measured":
+            status = "partial"
+        is_directory = stat_module.S_ISDIR(path_stat.st_mode)
+        context = context_for(path, root)
+        try:
+            child_count = len(list(path.iterdir())) if is_directory else 0
+        except OSError:
+            child_count = 0
+        node_id = stable_id("space", str(path.resolve()))
+        node = {
+            "node_id": node_id,
+            "parent_id": parent_id,
+            "root_id": root_id,
+            "depth": depth,
+            "name": path.name or safe_report_path(path, home, redact),
+            "path": safe_report_path(path, home, redact),
+            "kind": "folder" if is_directory else "file",
+            "category": context["category"],
+            "area": context["label"],
+            "allocated_bytes": size,
+            "human_size": human_size(size),
+            "modified_at": mtime_iso(path),
+            "measurement_status": measurement,
+            "measurement_error": sanitize_text(error, home, redact),
+            "timed_out": timed_out,
+            "child_count": child_count,
+            # This remains true at the scan boundary so the TUI can load the
+            # next level on demand instead of treating the boundary as a leaf.
+            "can_expand": is_directory and child_count > 0,
+        }
+        if include_local_paths:
+            # Private in-memory context for the local TUI. It is never emitted
+            # by JSON/Markdown output and is needed for lazy expansion/preview.
+            node["_local_path"] = str(path)
+        nodes.append(node)
+        may_descend = not should_skip_dir(path) or (allow_skipped_root and depth == 0)
+        if depth >= max_depth or not node["can_expand"] or not may_descend:
+            return
+        try:
+            children = [child for child in path.iterdir() if not child.is_symlink()]
+        except OSError as exc:
+            status = "partial"
+            report_error(path, str(exc))
+            return
+        child_rows: list[tuple[Path, Optional[int], str, bool]] = []
+        for child in children:
+            if len(nodes) + len(child_rows) >= node_limit or budget_exhausted(deadline):
+                status = "limit" if len(nodes) + len(child_rows) >= node_limit else "partial"
+                break
+            child_size, child_error, child_timed_out = size_for(child)
+            child_rows.append((child, child_size, child_error, child_timed_out))
+        child_rows.sort(key=lambda item: (item[1] if item[1] is not None else -1, str(item[0])), reverse=True)
+        for child, child_size, child_error, child_timed_out in child_rows:
+            if len(nodes) >= node_limit or budget_exhausted(deadline):
+                status = "limit" if len(nodes) >= node_limit else "partial"
+                break
+            add_node(child, node_id, depth + 1, root, root_id, (child_size, child_error, child_timed_out))
+
+    for root in roots:
+        if len(nodes) >= node_limit or budget_exhausted(deadline):
+            status = "limit" if len(nodes) >= node_limit else "partial"
+            break
+        root_id = stable_id("space", str(root.resolve()))
+        add_node(root, None, 0, root, root_id)
+    if not roots:
+        status = "not_found"
+    elif missing_roots and status == "complete":
+        status = "partial"
+    for missing in missing_roots:
+        report_error(missing, "selected path was not found")
+
+    return {
+        "enabled": True,
+        "status": status,
+        "selection_mode": "selected paths" if missing_roots or requested_roots != workspace_roots(home) else "workspace roots",
+        "roots": [safe_report_path(root, home, redact) for root in roots],
+        "requested_roots": [safe_report_path(root, home, redact) for root in requested_roots],
+        "missing_roots": [safe_report_path(root, home, redact) for root in missing_roots],
+        "max_depth": max_depth,
+        "node_limit": node_limit,
+        "timeout": timeout,
+        "time_budget": time_budget,
+        "node_count": len(nodes),
+        "nodes": nodes,
+        "errors": errors,
+    }
+
+
+def expand_space_map_node(
+    node: dict[str, Any],
+    home: Path,
+    redact: bool,
+    timeout: int,
+    node_limit: int,
+    time_budget: int,
+) -> tuple[list[dict[str, Any]], str]:
+    """Load only the immediate children of a TUI folder on demand."""
+    local_path = node.get("_local_path")
+    if node.get("kind") != "folder" or not local_path:
+        return [], "unavailable"
+    path = Path(str(local_path))
+    if not path.is_dir():
+        return [], "not_found"
+    root_id = stable_id("space", str(path.resolve()))
+    mapped = scan_space_map(
+        [path],
+        [],
+        [path],
+        home,
+        1,
+        node_limit,
+        timeout,
+        time_budget,
+        redact,
+        include_local_paths=True,
+        allow_skipped_root=True,
+    )
+    children = [item for item in mapped.get("nodes", []) if item.get("parent_id") == root_id]
+    parent_depth = int(node.get("depth") or 0)
+    for child in children:
+        child["root_id"] = node.get("root_id") or root_id
+        child["depth"] = parent_depth + 1
+    return children, str(mapped.get("status") or "unknown")
+
+
 def build_findings(
     records: list[dict[str, Any]],
     git: dict[str, Any],
     artifacts: list[dict[str, Any]],
+    duplicates: Optional[dict[str, Any]] = None,
 ) -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
     target_records: list[dict[str, Any]] = []
@@ -849,7 +1536,7 @@ def build_findings(
                 + (["target_areas[" + str(records.index(parent)) + "]"] if parent else []),
                 "confidence": "strong_inference" if status == "measured" else "low",
                 "risk": row.get("risk", "review"),
-                "recommendation": "Confirm the rebuild command before removal.",
+                "recommendation": "Check how this project recreates the folder before removing it.",
                 "approval_required": True,
                 "rollback_or_rebuild": row.get("rebuild_hint", "Rebuild the owning project."),
                 "parent_target_id": parent.get("finding_id") if parent else None,
@@ -857,6 +1544,34 @@ def build_findings(
                 "nested_artifact": nested,
             }
         )
+
+    if duplicates and duplicates.get("enabled"):
+        for index, group in enumerate(duplicates.get("groups", [])):
+            potential_bytes = group.get("potential_duplicate_bytes", 0)
+            status = group.get("status", "unknown")
+            findings.append(
+                {
+                    "finding_id": group.get("duplicate_group_id") or stable_id("duplicate", str(index)),
+                    "scope_id": "home",
+                    "path_redacted": group.get("canonical_candidate_path", "unknown"),
+                    "category": "duplicate",
+                    "owner": owner_for_category("duplicate"),
+                    "size_bytes": potential_bytes,
+                    "status": status,
+                    "evidence_refs": [f"duplicates.groups[{index}]"],
+                    "confidence": "confirmed" if status == "exact" else "low",
+                    "risk": "review",
+                    "recommendation": action_for_category("duplicate"),
+                    "approval_required": True,
+                    "rollback_or_rebuild": rollback_for_category("duplicate"),
+                    "duplicate_group_id": group.get("duplicate_group_id"),
+                    "file_count": group.get("file_count", 0),
+                    "independent_copy_count": group.get("independent_copy_count", 0),
+                    "potential_duplicate_bytes": potential_bytes,
+                    "canonical_candidate_path": group.get("canonical_candidate_path"),
+                    "overlap_warnings": group.get("overlap_warnings", []),
+                }
+            )
 
     for index, bucket in enumerate(git.get("buckets", [])):
         dirty_repos = bucket.get("dirty_repo_count", 0)
@@ -876,7 +1591,7 @@ def build_findings(
                 "evidence_refs": [f"git.buckets[{index}]"],
                 "confidence": "confirmed" if status == "dirty" else "low",
                 "risk": "user-data",
-                "recommendation": "Commit, stash, or export dirty changes before moving repositories.",
+                "recommendation": "Save or export the changes before moving this project.",
                 "approval_required": True,
                 "rollback_or_rebuild": "Restore the original repository or recover from Git/stash/export.",
                 "dirty_repo_count": dirty_repos,
@@ -886,27 +1601,92 @@ def build_findings(
     return findings
 
 
-def action_gate(records: list[dict[str, Any]], git: dict[str, Any], artifacts: list[dict[str, Any]]) -> dict[str, Any]:
+def action_gate(
+    records: list[dict[str, Any]],
+    git: dict[str, Any],
+    artifacts: list[dict[str, Any]],
+    duplicates: Optional[dict[str, Any]] = None,
+    space_map: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
     blockers: list[str] = []
     if any(row.get("measurement_status") != "measured" for row in records):
-        blockers.append("Some target size probes are incomplete; resolve timeout or error states before exact cleanup decisions.")
+        blockers.append("Some folder sizes could not be checked completely. Review those areas before deciding what to move or remove.")
     if git.get("skipped") or not git.get("status_collected", False):
-        blockers.append("Git status was not collected; repository moves require a status check first.")
+        blockers.append("We did not check projects for unsaved work. Check project status before moving any project folder.")
     dirty_changes = sum(row.get("dirty_change_count", 0) for row in git.get("buckets", []))
     if dirty_changes:
-        blockers.append(f"{dirty_changes} dirty Git changes require preservation before repository migration.")
+        blockers.append(f"{dirty_changes} unsaved project changes need to be preserved before any project is moved.")
     if any(row.get("measurement_status") != "measured" for row in artifacts):
-        blockers.append("Some artifact measurements are incomplete; do not treat them as reclaimable totals.")
-    return {
+        blockers.append("Some rebuildable folders could not be checked completely. Do not treat their sizes as reliable savings yet.")
+    if duplicates and duplicates.get("enabled") and duplicates.get("status") != "complete":
+        blockers.append("The repeated-file check stopped early. Do not decide what to remove from a partial result.")
+    if space_map and space_map.get("enabled") and space_map.get("status") not in {"complete", "disabled"}:
+        blockers.append("The selected space map is incomplete. Check the path again before relying on its distribution.")
+    gate = {
         "status": "review_only" if blockers else "approval_required",
         "scanner_mutates_files": False,
         "exact_cleanup_allowed": False,
         "requires_exact_approval": True,
         "blockers": blockers,
     }
+    if duplicates and duplicates.get("enabled") and duplicates.get("groups"):
+        gate["approval_notes"] = [
+            "Exact matches are review items, not deletion instructions.",
+            "Approve each group only after checking references, sync state, and the canonical candidate.",
+        ]
+    return gate
+
+
+def build_tui_report(args: argparse.Namespace) -> dict[str, Any]:
+    """Build only the focused map needed by the terminal explorer."""
+    home = Path(args.home).expanduser().resolve()
+    redact = not args.no_redact
+    focus_roots, focus_missing, focus_requested = focus_scan_roots(home, args.focus_root)
+    space_map = scan_space_map(
+        focus_roots,
+        focus_missing,
+        focus_requested,
+        home,
+        args.focus_depth,
+        args.focus_limit,
+        args.focus_timeout,
+        args.focus_time_budget,
+        redact,
+        include_local_paths=True,
+    )
+    return {
+        "schema_version": "1.3",
+        "generated_at": now_iso(),
+        "read_only": True,
+        "settings": {
+            "home": display_home(home, redact),
+            "scope_id": "focused-path",
+            "size_kind": "allocated_bytes",
+            "mode": "interactive",
+            "redact": redact,
+            "interactive": True,
+            "tui": True,
+            "interactive_only": True,
+            "focus_roots": space_map.get("requested_roots", []),
+            "focus_depth": space_map.get("max_depth", args.focus_depth),
+            "requested_focus_depth": args.focus_depth,
+            "focus_limit": args.focus_limit,
+            "focus_timeout": args.focus_timeout,
+            "focus_time_budget": args.focus_time_budget,
+        },
+        "space_map": space_map,
+        "action_gate": {
+            "status": "review_only",
+            "scanner_mutates_files": False,
+            "exact_cleanup_allowed": False,
+            "requires_exact_approval": True,
+        },
+    }
 
 
 def build_report(args: argparse.Namespace) -> dict[str, Any]:
+    if args.tui:
+        return build_tui_report(args)
     home = Path(args.home).expanduser().resolve()
     redact = not args.no_redact
     min_bytes = int(args.min_mb * 1024 * 1024)
@@ -941,10 +1721,63 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
     artifacts = []
     if args.mode == "full" or args.artifacts:
         artifacts = scan_artifacts(roots, home, args.artifact_depth, min_bytes, args.artifact_limit, child_timeout, redact)
+    duplicates = {
+        "enabled": False,
+        "status": "disabled",
+        "hash_algorithm": "sha256",
+        "byte_kind": "logical_bytes",
+        "roots": [],
+        "requested_roots": [],
+        "missing_roots": [],
+        "excluded_scopes": duplicate_excluded_scopes(),
+        "groups": [],
+        "group_count": 0,
+        "potential_duplicate_bytes": 0,
+        "potential_duplicate_size": human_size(0),
+    }
+    if args.duplicates:
+        duplicate_roots, missing_roots, requested_roots = duplicate_scan_roots(home, args.duplicate_root)
+        duplicates = scan_duplicates(
+            duplicate_roots,
+            missing_roots,
+            requested_roots,
+            home,
+            int(args.duplicate_min_mb * 1024 * 1024),
+            args.duplicate_time_budget,
+            int(args.duplicate_max_mb * 1024 * 1024),
+            args.duplicate_file_limit,
+            redact,
+        )
+        duplicates = annotate_duplicate_overlaps(duplicates, records, artifacts)
+    space_map = {
+        "enabled": False,
+        "status": "disabled",
+        "selection_mode": "not selected",
+        "roots": [],
+        "requested_roots": [],
+        "missing_roots": [],
+        "nodes": [],
+        "node_count": 0,
+        "errors": [],
+    }
+    if args.tui or args.interactive or args.focus_root:
+        focus_roots, focus_missing, focus_requested = focus_scan_roots(home, args.focus_root)
+        space_map = scan_space_map(
+            focus_roots,
+            focus_missing,
+            focus_requested,
+            home,
+            args.focus_depth,
+            args.focus_limit,
+            args.focus_timeout,
+            args.focus_time_budget,
+            redact,
+            include_local_paths=args.tui,
+        )
     coverage = target_coverage(records)
-    findings = build_findings(records, git, artifacts)
+    findings = build_findings(records, git, artifacts, duplicates)
     return {
-        "schema_version": "1.1",
+        "schema_version": "1.3",
         "generated_at": now_iso(),
         "read_only": True,
         "host": {
@@ -967,6 +1800,20 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             "git_status": args.git_status,
             "include_git_origins": args.include_git_origins,
             "artifacts": bool(artifacts),
+            "duplicates": args.duplicates,
+            "duplicate_roots": duplicates.get("requested_roots", []),
+            "duplicate_min_mb": args.duplicate_min_mb,
+            "duplicate_time_budget": args.duplicate_time_budget,
+            "duplicate_max_mb": args.duplicate_max_mb,
+            "duplicate_file_limit": args.duplicate_file_limit,
+            "interactive": space_map.get("enabled", False),
+            "tui": args.tui,
+            "focus_roots": space_map.get("requested_roots", []),
+            "focus_depth": space_map.get("max_depth", args.focus_depth),
+            "requested_focus_depth": args.focus_depth,
+            "focus_limit": args.focus_limit,
+            "focus_timeout": args.focus_timeout,
+            "focus_time_budget": args.focus_time_budget,
         },
         "disk": disk_summary(home, redact),
         "target_areas": records,
@@ -975,13 +1822,21 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         "codex": codex,
         "git": git,
         "artifacts": artifacts,
+        "duplicates": duplicates,
+        "space_map": space_map,
         "findings": findings,
-        "action_gate": action_gate(records, git, artifacts),
-        "recommendations": recommendations(records, git, artifacts, codex),
+        "action_gate": action_gate(records, git, artifacts, duplicates, space_map),
+        "recommendations": recommendations(records, git, artifacts, codex, duplicates),
     }
 
 
-def recommendations(records: list[dict[str, Any]], git: dict[str, Any], artifacts: list[dict[str, Any]], codex: Optional[dict[str, Any]]) -> list[str]:
+def recommendations(
+    records: list[dict[str, Any]],
+    git: dict[str, Any],
+    artifacts: list[dict[str, Any]],
+    codex: Optional[dict[str, Any]],
+    duplicates: Optional[dict[str, Any]] = None,
+) -> list[str]:
     recs: list[str] = []
     by_label: dict[str, int] = {}
     by_category: dict[str, int] = {}
@@ -990,22 +1845,32 @@ def recommendations(records: list[dict[str, Any]], git: dict[str, Any], artifact
         by_label[row["label"]] = by_label.get(row["label"], 0) + size
         by_category[row["category"]] = by_category.get(row["category"], 0) + size
     if by_label.get("Desktop", 0) > 10 * 1024**3:
-        recs.append("Desktop is large enough to treat as an inbox. Move durable work into stable roots such as ~/work, ~/research, ~/papers, ~/personal, or ~/src.")
+        recs.append("Your Desktop is carrying a lot of working material. Move finished work to a stable folder before archiving older items.")
     elif any(row.get("label") == "Desktop" and row.get("timed_out") for row in records):
-        recs.append("Desktop size measurement hit its timeout. Re-run with a larger --target-timeout or a narrower --home path before planning migration.")
+        recs.append("We could not finish checking the Desktop. Look at it again with a little more time before planning any move.")
     if codex and codex.get("outputs_dir_count", 0) > 20:
-        recs.append("Codex has many output/work directories. Promote selected outputs to a durable library, then archive old date folders by month.")
+        recs.append("Your Codex work area has accumulated many dated folders. Keep the useful outputs in a stable library, then archive older work by month.")
     if by_category.get("app-state", 0) > 5 * 1024**3:
-        recs.append("Chat, browser, email, and collaboration app storage is material. Use app-native storage cleanup before filesystem deletion.")
+        recs.append("Chat, browser, mail, and collaboration apps are using meaningful space. Review them from inside each app instead of deleting their folders directly.")
     if len(git.get("buckets", [])) > 3:
-        recs.append("Git repositories are spread across multiple buckets. Standardize new clones under ~/src/<host>/<owner>/<repo> and migrate dirty repos only after commit/stash/export.")
+        recs.append("Your projects are spread across several folders. Before moving any project, check for unsaved work and choose one home for future projects.")
     elif git.get("skipped"):
-        recs.append("Git discovery was skipped for speed. Re-run with --git before planning repository moves.")
+        recs.append("The quick check did not look for project folders. Run a deeper check before moving development work.")
     if artifacts:
         total = sum(item.get("allocated_bytes") or 0 for item in artifacts)
-        recs.append(f"Detected {len(artifacts)} large rebuildable/review artifacts totaling about {human_size(total)}. Treat them as cleanup candidates only after exact approval.")
+        recs.append(f"We found {len(artifacts)} folders that may be rebuilt, using about {human_size(total)}. Check each project before removing one; the folder may already be counted inside a larger total.")
+    if duplicates and duplicates.get("enabled"):
+        if duplicates.get("status") == "complete" and duplicates.get("groups"):
+            group_word = "set" if len(duplicates["groups"]) == 1 else "sets"
+            recs.append(
+                f"We found {len(duplicates['groups'])} {group_word} of identical files, with about {duplicates.get('potential_duplicate_size', '0 B')} in possible extra copies. Start with one set at a time; matching files are not automatically safe to remove."
+            )
+        elif duplicates.get("status") == "complete":
+            recs.append("We did not find identical files in the work folders we checked.")
+        else:
+            recs.append("The repeated-file check stopped before it finished. Run it again with more time before relying on the result.")
     if not recs:
-        recs.append("No major organization issue detected from shallow metadata. Use --mode full --artifacts --git-status for deeper evidence.")
+        recs.append("Nothing stands out in this first pass. A deeper check can look inside project folders and confirm project status.")
     return recs
 
 
@@ -1021,11 +1886,11 @@ def markdown_table(headers: list[str], rows: list[list[str]]) -> str:
 def display_measurement(row: dict[str, Any]) -> str:
     status = row.get("measurement_status", "unknown")
     if status == "timeout":
-        return "unknown (timeout)"
+        return "Could not measure (time limit)"
     if status in {"error", "unknown"}:
-        return f"unknown ({status})"
+        return "Could not measure"
     if status == "missing":
-        return "not found"
+        return "Not found"
     return row.get("human_size", "unknown")
 
 
@@ -1146,6 +2011,54 @@ def render_markdown(report: dict[str, Any]) -> str:
             rows.append([display_measurement(row), row.get("measurement_status", "unknown"), row["risk"], row["name"], f"`{row['path']}`", "yes" if finding.get("counted_in_total") else "unknown", row["rebuild_hint"]])
         lines.append(markdown_table(["Size", "Status", "Risk", "Name", "Path", "In Parent", "Rebuild"], rows))
         lines.append("")
+    duplicates = report.get("duplicates") or {}
+    lines.append("## Exact Duplicate Groups")
+    lines.append("")
+    if not duplicates.get("enabled"):
+        lines.append("Exact duplicate detection is disabled. The default audit does not read file contents; opt in with `--duplicates`.")
+        lines.append("")
+    else:
+        lines.append(
+            f"Status: `{duplicates.get('status', 'unknown')}`. Hashing is local and uses {duplicates.get('hash_algorithm', 'sha256').upper()}; no file contents or hashes are uploaded."
+        )
+        if duplicates.get("excluded_scopes"):
+            excluded = ", ".join(item.get("label", "unknown") for item in duplicates["excluded_scopes"])
+            lines.append(f"Excluded by default: {excluded}.")
+        lines.append("")
+        duplicate_groups = duplicates.get("groups") or []
+        if duplicate_groups:
+            rows = []
+            for group in duplicate_groups[:50]:
+                contexts = ", ".join(f"{key}: {value}" for key, value in sorted((group.get("contexts") or {}).items()))
+                overlap = "; ".join(group.get("overlap_warnings") or []) or "none reported"
+                rows.append(
+                    [
+                        f"`{group.get('duplicate_group_id', 'unknown')}`",
+                        str(group.get("file_count", 0)),
+                        str(group.get("independent_copy_count", 0)),
+                        group.get("potential_duplicate_size", "unknown"),
+                        f"`{group.get('canonical_candidate_path', 'unknown')}`",
+                        contexts or "unknown",
+                        overlap,
+                    ]
+                )
+            lines.append(markdown_table(["Group", "Copies", "Independent", "Potential logical bytes", "Review candidate", "Contexts", "Overlap"], rows))
+            lines.append("")
+            for group in duplicate_groups[:20]:
+                lines.append(f"### `{group.get('duplicate_group_id', 'unknown')}`")
+                lines.append("")
+                for path_row in group.get("paths", []):
+                    alias = "; hard-link alias" if path_row.get("hardlink_alias") else ""
+                    lines.append(f"- `{path_row.get('path', 'unknown')}` ({path_row.get('scope', 'unknown')}; {path_row.get('context', 'unknown')}{alias})")
+                if group.get("overlap_warnings"):
+                    lines.append("")
+                    lines.append("Review notes:")
+                    for warning in group["overlap_warnings"]:
+                        lines.append(f"- {warning}")
+                lines.append("")
+        else:
+            lines.append("No exact duplicate groups were found in the selected roots.")
+            lines.append("")
     if report.get("findings"):
         lines.append("## Decision Ledger")
         lines.append("")
@@ -1173,504 +2086,11 @@ def render_markdown(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def html_escape(value: Any) -> str:
-    return html.escape("" if value is None else str(value), quote=True)
-
-
-def html_token(value: Any) -> str:
-    token = re.sub(r"[^a-z0-9_-]+", "-", str(value).lower()).strip("-")
-    return token or "unknown"
-
-
-def html_badge(value: Any) -> str:
-    return f'<span class="badge {html_token(value)}">{html_escape(value)}</span>'
-
-
-def html_table(headers: list[str], rows: list[list[str]], empty: str = "No data.") -> str:
-    if not rows:
-        return f'<p class="empty">{html_escape(empty)}</p>'
-    header_html = "".join(f"<th scope=\"col\">{html_escape(header)}</th>" for header in headers)
-    body_html = []
-    for row in rows:
-        body_html.append("<tr>" + "".join(f"<td>{cell}</td>" for cell in row) + "</tr>")
-    return (
-        '<div class="table-wrap"><table><thead><tr>'
-        + header_html
-        + "</tr></thead><tbody>"
-        + "".join(body_html)
-        + "</tbody></table></div>"
-    )
-
-
-def html_metric(label: str, value: Any, note: str = "") -> str:
-    return (
-        '<div class="metric">'
-        f'<div class="metric-label">{html_escape(label)}</div>'
-        f'<div class="metric-value">{html_escape(value)}</div>'
-        f'<div class="metric-note">{html_escape(note)}</div>'
-        "</div>"
-    )
-
-
-def html_meter(label: str, percentage: int, note: str, tone: str = "green") -> str:
-    percentage = max(0, min(100, int(percentage)))
-    return (
-        '<div class="meter-block">'
-        f'<div class="meter-label"><span>{html_escape(label)}</span><strong>{percentage}%</strong></div>'
-        f'<div class="meter"><span class="meter-fill {html_token(tone)}" style="width: {percentage}%"></span></div>'
-        f'<div class="meter-note">{html_escape(note)}</div>'
-        '</div>'
-    )
-
-
-def render_html(report: dict[str, Any]) -> str:
-    """Render a self-contained, offline report for human review."""
-
-    disk = report.get("disk") or {}
-    gate = report.get("action_gate") or {}
-    settings = report.get("settings") or {}
-    target_areas = report.get("target_areas") or []
-    coverage = report.get("coverage") or []
-    artifacts = report.get("artifacts") or []
-    findings = report.get("findings") or []
-    codex = report.get("codex") or {}
-    git = report.get("git") or {}
-    blockers = gate.get("blockers") or []
-    decision_status = gate.get("status", "review_only")
-    measured_targets = sum(row.get("measurement_status") == "measured" for row in target_areas)
-    measured_artifacts = sum(row.get("measurement_status") == "measured" for row in artifacts)
-    target_note = f"{measured_targets} measured of {len(target_areas)} rows"
-    artifact_note = f"{measured_artifacts} measured; subsets may overlap"
-    target_percentage = round(measured_targets * 100 / len(target_areas)) if target_areas else 0
-    artifact_percentage = round(measured_artifacts * 100 / len(artifacts)) if artifacts else 100
-    disk_used_percentage = 0
-    if isinstance(disk.get("used_bytes"), int) and isinstance(disk.get("total_bytes"), int) and disk.get("total_bytes"):
-        disk_used_percentage = round(disk["used_bytes"] * 100 / disk["total_bytes"])
-    dirty_repo_count = sum(
-        row.get("dirty_repo_count", 0)
-        for row in git.get("buckets", [])
-        if isinstance(row.get("dirty_repo_count", 0), int)
-    )
-    dirty_change_count = sum(
-        row.get("dirty_change_count", 0)
-        for row in git.get("buckets", [])
-        if isinstance(row.get("dirty_change_count", 0), int)
-    )
-    git_value = "not scanned" if git.get("skipped") else len(git.get("repos", []))
-    git_note = "Run full mode with --git-status for preservation checks" if git.get("skipped") else "repositories discovered"
-    codex_value = codex.get("outputs_dir_count", "not detected") if codex else "not detected"
-    codex_note = "outputs directories" if codex else "Codex workspace not found"
-    if decision_status == "review_only":
-        decision_label = "Review only"
-        decision_heading = "Evidence is incomplete"
-        decision_copy = "Resolve the blockers below before turning this report into a cleanup plan."
-        decision_tone = "amber"
-    else:
-        decision_label = "Approval required"
-        decision_heading = "Ready for exact review"
-        decision_copy = "The measurements are complete enough to review exact paths one category at a time."
-        decision_tone = "blue"
-
-    warnings = []
-    if settings.get("redact") is False:
-        warnings.append("This report was generated with path redaction disabled. Keep it private.")
-    if settings.get("include_git_origins"):
-        warnings.append("Git origin collection was enabled. Keep this report private.")
-    warning_html = "".join(f'<div class="warning">{html_escape(item)}</div>' for item in warnings)
-
-    target_rows = []
-    for row in target_areas[:25]:
-        target_rows.append(
-            [
-                html_escape(display_measurement(row)),
-                html_badge(row.get("measurement_status", "unknown")),
-                html_escape(row.get("category", "unknown")),
-                html_escape(row.get("risk", "review")),
-                f'<code>{html_escape(row.get("path", ""))}</code>',
-                html_escape(row.get("label", "")),
-            ]
-        )
-
-    coverage_rows = []
-    for row in coverage:
-        coverage_rows.append(
-            [
-                html_badge(row.get("status", "unknown")),
-                html_escape(row.get("matches", 0)),
-                html_escape(row.get("unknown", 0)),
-                html_escape(human_size(row.get("measured_bytes"))),
-                html_escape(row.get("label", "")),
-            ]
-        )
-
-    app_rows = []
-    for row in [row for row in target_areas if row.get("category") in {"app-state", "cloud-sync"}][:20]:
-        app_rows.append(
-            [
-                html_escape(display_measurement(row)),
-                html_badge(row.get("measurement_status", "unknown")),
-                html_escape(row.get("risk", "review")),
-                f'<code>{html_escape(row.get("path", ""))}</code>',
-                html_escape(row.get("label", "")),
-            ]
-        )
-
-    codex_rows = []
-    for row in (codex.get("top_date_dirs") or [])[:10]:
-        codex_rows.append(
-            [
-                html_escape(display_measurement(row)),
-                html_badge(row.get("measurement_status", "unknown")),
-                f'<code>{html_escape(row.get("path", ""))}</code>',
-                html_escape(row.get("modified_at") or ""),
-            ]
-        )
-
-    child_sections = []
-    for root, rows_data in (report.get("top_children") or {}).items():
-        rows = []
-        for row in rows_data[:15]:
-            rows.append(
-                [
-                    html_escape(display_measurement(row)),
-                    html_badge(row.get("measurement_status", "unknown")),
-                    f'<code>{html_escape(row.get("path", ""))}</code>',
-                    html_escape(row.get("modified_at") or ""),
-                ]
-            )
-        if rows:
-            child_sections.append(
-                f'<h3>{html_escape(root)}</h3>'
-                + html_table(["Size", "Status", "Path", "Modified"], rows)
-            )
-    children_html = "".join(child_sections) or '<p class="empty">No measured child directories above the configured threshold.</p>'
-
-    git_rows = []
-    for row in (git.get("buckets") or [])[:20]:
-        git_rows.append(
-            [
-                html_escape(row.get("repo_count", 0)),
-                html_escape(row.get("dirty_repo_count", 0)),
-                html_escape(row.get("dirty_change_count", 0)),
-                f'<code>{html_escape(row.get("bucket", ""))}</code>',
-            ]
-        )
-    git_status_note = (
-        "Git dirty counts were not collected. Do not move repositories yet."
-        if not git.get("skipped") and not settings.get("git_status")
-        else "Dirty changes are preservation blockers."
-        if not git.get("skipped") and settings.get("git_status")
-        else "Git discovery was skipped in quick mode."
-    )
-
-    finding_by_path = {item.get("path_redacted"): item for item in findings}
-    artifact_rows = []
-    for row in artifacts[:30]:
-        finding = finding_by_path.get(row.get("path"), {})
-        artifact_rows.append(
-            [
-                html_escape(display_measurement(row)),
-                html_badge(row.get("measurement_status", "unknown")),
-                html_escape(row.get("risk", "review")),
-                html_escape(row.get("name", "")),
-                f'<code>{html_escape(row.get("path", ""))}</code>',
-                html_escape("yes" if finding.get("counted_in_total") else "unknown"),
-                html_escape(row.get("rebuild_hint", "")),
-            ]
-        )
-
-    finding_rows = []
-    for finding in findings[:40]:
-        finding_rows.append(
-            [
-                html_badge(finding.get("status", "unknown")),
-                html_badge(finding.get("confidence", "low")),
-                html_escape(finding.get("category", "unknown")),
-                html_escape(finding.get("owner", "unknown")),
-                f'<code>{html_escape(finding.get("path_redacted", ""))}</code>',
-                html_escape(finding.get("recommendation", "Review")),
-            ]
-        )
-
-    recommendation_items = "".join(
-        f"<li>{html_escape(item)}</li>" for item in (report.get("recommendations") or [])
-    ) or "<li>No additional heuristic recommendations.</li>"
-    blocker_items = "".join(f"<li>{html_escape(item)}</li>" for item in blockers)
-    blocker_content = (
-        f"<ul>{blocker_items}</ul>"
-        if blockers
-        else '<p class="good">No evidence blockers. Any cleanup is still approval-gated.</p>'
-    )
-    app_content = html_table(
-        ["Size", "Status", "Risk", "Path", "Target"],
-        app_rows,
-        "No app-managed or cloud-sync targets were found.",
-    )
-    codex_content = (
-        f'<div class="inline-stats"><span><strong>{html_escape(codex.get("date_dir_count", 0))}</strong> date directories</span>'
-        f'<span><strong>{html_escape(codex.get("work_dir_count", 0))}</strong> work directories</span>'
-        f'<span><strong>{html_escape(codex.get("outputs_dir_count", 0))}</strong> outputs directories</span></div>'
-        + html_table(["Size", "Status", "Date directory", "Modified"], codex_rows, "No dated Codex directories were measured.")
-        if codex
-        else '<p class="empty">No Codex workspace was found.</p>'
-    )
-
-    styles = """
-    :root { color-scheme: light; --ink: #182b29; --muted: #687874; --line: #d8e1dd; --paper: #ffffff; --bg: #eef2ef; --deep: #123c37; --deep-2: #1f5a50; --green: #1f7658; --green-soft: #e5f2eb; --lime: #d4e96e; --amber: #916100; --amber-soft: #fff2d2; --red: #a74743; --red-soft: #fbe9e7; --blue: #285f87; --blue-soft: #e8f1f7; --coral: #df785c; }
-    * { box-sizing: border-box; }
-    html { scroll-behavior: smooth; }
-    body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    a { color: inherit; }
-    .masthead { background: var(--deep); color: #f7f6ed; }
-    .masthead-inner, main { max-width: 1240px; margin: 0 auto; }
-    .masthead-inner { display: flex; justify-content: space-between; gap: 22px; align-items: center; padding: 15px 22px; }
-    .brand { display: flex; align-items: center; gap: 10px; font-weight: 750; letter-spacing: .01em; }
-    .brand-mark { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 7px; background: var(--lime); color: var(--deep); font-size: 10px; font-weight: 850; letter-spacing: -.02em; }
-    .masthead-meta { color: #b6cbc2; font-size: 12px; text-align: right; }
-    main { padding: 0 22px 62px; }
-    .hero { display: grid; grid-template-columns: minmax(0, 1fr) 330px; gap: 34px; align-items: stretch; margin: 0 -22px; padding: 48px 44px 42px; background: var(--deep); color: #f7f6ed; border-top: 1px solid #2a5a51; }
-    .eyebrow, .section-kicker { margin: 0 0 8px; color: var(--lime); font-size: 11px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
-    h1 { max-width: 720px; margin: 0; font-size: clamp(34px, 5vw, 60px); line-height: 1.02; letter-spacing: 0; }
-    h2 { margin: 0; font-size: 21px; letter-spacing: 0; }
-    h3 { margin: 20px 0 8px; font-size: 15px; }
-    .lede { max-width: 700px; margin: 16px 0 0; color: #c6d5cf; font-size: 17px; }
-    .hero-meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 24px; }
-    .tag { display: inline-flex; align-items: center; min-height: 25px; padding: 3px 9px; border: 1px solid #416b61; border-radius: 999px; color: #d5e2dc; font-size: 12px; }
-    .status-card { display: flex; gap: 14px; align-items: flex-start; align-self: center; padding: 20px; border: 1px solid #54766e; border-radius: 8px; background: #f7f4e9; color: var(--ink); }
-    .status-icon { display: grid; place-items: center; flex: 0 0 auto; width: 34px; height: 34px; border-radius: 50%; background: var(--amber-soft); color: var(--amber); font-size: 18px; font-weight: 850; }
-    .status-icon.blue { background: var(--blue-soft); color: var(--blue); }
-    .decision-label { color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; }
-    .decision-value { margin-top: 4px; font-size: 19px; font-weight: 800; }
-    .decision-value.amber { color: var(--amber); }
-    .decision-value.blue { color: var(--blue); }
-    .decision-copy { margin: 7px 0 0; color: var(--muted); font-size: 13px; }
-    .report-nav { display: flex; gap: 18px; overflow-x: auto; margin: 0 -22px; padding: 12px 22px; border-bottom: 1px solid var(--line); background: var(--paper); color: var(--muted); font-size: 12px; white-space: nowrap; }
-    .report-nav a { text-decoration: none; }
-    .report-nav a:hover { color: var(--deep); }
-    .notice, .warning, .panel { border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
-    .notice { margin-top: 18px; padding: 11px 14px; color: var(--muted); font-size: 13px; }
-    .warning { margin-top: 10px; padding: 11px 14px; background: var(--amber-soft); border-color: #efd38e; color: var(--amber); }
-    .signals { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; margin-top: 18px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: var(--paper); }
-    .signal { min-height: 150px; padding: 18px 20px; border-right: 1px solid var(--line); }
-    .signal:last-child { border-right: 0; }
-    .signal-label, .metric-label { color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; }
-    .signal-value { margin-top: 5px; font-size: 28px; font-weight: 820; letter-spacing: 0; }
-    .signal-note { min-height: 43px; margin-top: 3px; color: var(--muted); font-size: 12px; }
-    .meter-block { margin-top: 10px; }
-    .meter-label { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 12px; }
-    .meter-label strong { color: var(--ink); }
-    .meter { height: 6px; margin-top: 6px; overflow: hidden; border-radius: 999px; background: #e3eae6; }
-    .meter-fill { display: block; height: 100%; border-radius: inherit; background: var(--green); }
-    .meter-fill.amber { background: var(--coral); }
-    .meter-fill.blue { background: var(--blue); }
-    .meter-note { margin-top: 5px; color: var(--muted); font-size: 11px; }
-    .metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 10px; }
-    .metric { min-height: 95px; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: #f8faf8; }
-    .metric-value { margin-top: 5px; font-size: 21px; font-weight: 780; overflow-wrap: anywhere; }
-    .metric-note { margin-top: 4px; color: var(--muted); font-size: 11px; }
-    .panel { margin-top: 18px; padding: 22px; }
-    .panel > p { margin: 8px 0 12px; color: var(--muted); }
-    .callout { border-left: 4px solid var(--coral); }
-    .section-head { display: flex; justify-content: space-between; gap: 20px; align-items: flex-end; margin-bottom: 12px; }
-    .section-note { max-width: 460px; color: var(--muted); font-size: 12px; text-align: right; }
-    .good { color: var(--green) !important; }
-    ul { margin: 8px 0 0; padding-left: 22px; }
-    li + li { margin-top: 5px; }
-    .table-wrap { overflow-x: auto; }
-    table { width: 100%; min-width: 670px; border-collapse: collapse; }
-    th, td { padding: 10px 9px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
-    th { color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; white-space: nowrap; }
-    tbody tr:hover { background: #f5f8f5; }
-    code { color: #34534d; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
-    .badge { display: inline-block; padding: 2px 7px; border: 1px solid var(--line); border-radius: 999px; background: #f4f6f4; color: var(--muted); font-size: 12px; line-height: 1.4; white-space: nowrap; }
-    .badge.measured, .badge.confirmed, .badge.dirty { background: var(--green-soft); border-color: #b9dfcc; color: var(--green); }
-    .badge.timeout, .badge.error, .badge.low { background: var(--red-soft); border-color: #efc4c4; color: var(--red); }
-    .badge.unknown, .badge.review_only { background: var(--amber-soft); border-color: #efd38e; color: var(--amber); }
-    .badge.strong_inference { background: var(--blue-soft); border-color: #c2d9e9; color: var(--blue); }
-    .inline-stats { display: flex; flex-wrap: wrap; gap: 10px 22px; margin: 0 0 14px; color: var(--muted); }
-    .inline-stats strong { color: var(--ink); font-size: 18px; }
-    details summary { cursor: pointer; color: var(--ink); font-weight: 780; }
-    details summary::marker { color: var(--green); }
-    .empty { color: var(--muted); font-style: italic; }
-    footer { margin-top: 22px; color: var(--muted); font-size: 12px; }
-    @media (max-width: 860px) { .hero { grid-template-columns: 1fr; } .status-card { max-width: 440px; } .signals { grid-template-columns: 1fr; } .signal { border-right: 0; border-bottom: 1px solid var(--line); } .signal:last-child { border-bottom: 0; } .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-    @media (max-width: 620px) { .masthead-inner, main { padding-left: 14px; padding-right: 14px; } .hero { margin-left: -14px; margin-right: -14px; padding: 34px 20px; } .report-nav { margin-left: -14px; margin-right: -14px; padding-left: 14px; padding-right: 14px; } .masthead-meta { display: none; } .section-head { display: block; } .section-note { margin-top: 6px; text-align: left; } .metrics { grid-template-columns: 1fr 1fr; } .panel { padding: 16px; } }
-    @media print { body { background: #fff; } .masthead, .report-nav { display: none; } main { max-width: none; padding: 0; } .hero { margin: 0; } .panel, .metric, .notice, .signals { break-inside: avoid; } }
-    """
-
-    return f"""<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Clean Your Data | Local Audit</title>
-  <style>{styles}</style>
-</head>
-<body>
-<div class="masthead">
-  <div class="masthead-inner">
-    <div class="brand"><span class="brand-mark">CYD</span><span>Clean Your Data</span></div>
-    <div class="masthead-meta">METADATA ONLY &middot; OFFLINE REPORT</div>
-  </div>
-</div>
-
-<main>
-  <header class="hero">
-    <div>
-      <p class="eyebrow">LOCAL STORAGE / AUDIT BRIEF</p>
-      <h1>Clean Your Data</h1>
-      <p class="lede">A readable map of what is accumulating, who owns it, and what needs review before anything moves.</p>
-      <div class="hero-meta">
-        <span class="tag">READ-ONLY</span>
-        <span class="tag">{("PATHS REDACTED" if settings.get("redact", True) else "PATHS NOT REDACTED")}</span>
-        <span class="tag">SCHEMA {html_escape(report.get("schema_version", "unknown"))}</span>
-      </div>
-    </div>
-    <div class="status-card">
-      <span class="status-icon {html_token(decision_tone)}">{"!" if decision_status == "review_only" else "OK"}</span>
-      <div>
-        <div class="decision-label">Decision state</div>
-        <div class="decision-value {html_token(decision_tone)}">{html_escape(decision_label)}</div>
-        <div class="decision-copy"><strong>{html_escape(decision_heading)}</strong><br>{html_escape(decision_copy)}</div>
-      </div>
-    </div>
-  </header>
-
-  <nav class="report-nav" aria-label="Report sections">
-    <a href="#decision">Decision</a>
-    <a href="#signals">Signals</a>
-    <a href="#coverage">Coverage</a>
-    <a href="#targets">Largest areas</a>
-    <a href="#codex">Codex</a>
-    <a href="#git">Git</a>
-    <a href="#artifacts">Artifacts</a>
-    <a href="#ledger">Ledger</a>
-  </nav>
-
-  <div class="notice">Generated {html_escape(report.get("generated_at", "unknown"))} &middot; Scope {html_escape(settings.get("home", "~"))} &middot; No files were modified, moved, or deleted.</div>
-  {warning_html}
-
-  <section id="decision" class="panel callout">
-    <div class="section-head">
-      <div><p class="section-kicker">00 / DECISION</p><h2>What needs attention first</h2></div>
-      <div class="section-note">The scanner reports evidence. It never turns evidence into permission to delete.</div>
-    </div>
-    {blocker_content}
-  </section>
-
-  <section id="signals" class="signals" aria-label="Audit signals">
-    <div class="signal">
-      <div class="signal-label">Evidence coverage</div>
-      <div class="signal-value">{measured_targets} / {len(target_areas)}</div>
-      <div class="signal-note">Target rows with a measured size</div>
-      {html_meter("Measured", target_percentage, target_note, decision_tone)}
-    </div>
-    <div class="signal">
-      <div class="signal-label">Disk allocation</div>
-      <div class="signal-value">{html_escape(disk.get("used", "unknown"))}</div>
-      <div class="signal-note">{html_escape(disk.get("free", "unknown"))} free of {html_escape(disk.get("total", "unknown"))}</div>
-      {html_meter("Used", disk_used_percentage, "Filesystem allocation estimate", "blue")}
-    </div>
-    <div class="signal">
-      <div class="signal-label">Artifact evidence</div>
-      <div class="signal-value">{len(artifacts)}</div>
-      <div class="signal-note">Rebuildable or review candidates; not additive totals</div>
-      {html_meter("Measured", artifact_percentage, artifact_note, "green")}
-    </div>
-  </section>
-
-  <section class="metrics" aria-label="Audit summary">
-    {html_metric("Findings", len(findings), "evidence-linked review items")}
-    {html_metric("Git repositories", git_value, f"{dirty_repo_count} dirty repositories")}
-    {html_metric("Dirty changes", dirty_change_count, "preserve before migration")}
-    {html_metric("Artifacts", len(artifacts), "candidate subsets")}
-    {html_metric("Codex outputs", codex_value, codex_note)}
-    {html_metric("Scope", settings.get("home", "~"), f"{target_note}; {html_escape(settings.get('mode', 'quick'))} mode")}
-  </section>
-
-  <section id="summary" class="panel">
-    <div class="section-head">
-      <div><p class="section-kicker">SUMMARY / PATTERNS</p><h2>What the evidence suggests</h2></div>
-      <div class="section-note">Heuristics explain where to look. They do not authorize cleanup.</div>
-    </div>
-    <ul>{recommendation_items}</ul>
-  </section>
-
-  <section id="coverage" class="panel">
-    <div class="section-head">
-      <div><p class="section-kicker">01 / EVIDENCE</p><h2>Coverage</h2></div>
-      <div class="section-note">Measured, timeout, error, and not-found states stay separate; unknown is never zero.</div>
-    </div>
-    {html_table(["Status", "Matches", "Unknown", "Measured", "Target"], coverage_rows)}
-  </section>
-
-  <section id="targets" class="panel">
-    <div class="section-head">
-      <div><p class="section-kicker">02 / WHERE</p><h2>Largest target areas</h2></div>
-      <div class="section-note">Start here for review, not deletion. A large directory may still be user data.</div>
-    </div>
-    {html_table(["Size", "Status", "Category", "Risk", "Path", "Target"], target_rows)}
-  </section>
-
-  <section id="apps" class="panel">
-    <details open>
-      <summary>App-managed and cloud-sync data</summary>
-      <p>Handle these through the owning app or sync provider. Do not bulk-delete their containers.</p>
-      {app_content}
-    </details>
-  </section>
-
-  <section id="codex" class="panel">
-    <details open>
-      <summary>Codex workspaces</summary>
-      {codex_content}
-    </details>
-  </section>
-
-  <section id="children" class="panel">
-    <details>
-      <summary>Workspace children</summary>
-      <p>Immediate child directories above the configured size threshold. This remains metadata-only.</p>
-      {children_html}
-    </details>
-  </section>
-
-  <section id="git" class="panel">
-    <details open>
-      <summary>Git distribution</summary>
-      <p>{html_escape(git_status_note)}</p>
-      {html_table(["Repositories", "Dirty repos", "Dirty changes", "Bucket"], git_rows, "No Git buckets were reported.")}
-    </details>
-  </section>
-
-  <section id="artifacts" class="panel">
-    <details open>
-      <summary>Rebuildable or review artifacts</summary>
-      <p>Artifact rows can be subsets of parent workspace totals. Do not add them together as reclaimable space.</p>
-      {html_table(["Size", "Status", "Risk", "Name", "Path", "In parent", "Rebuild hint"], artifact_rows, "No artifact candidates were reported.")}
-    </details>
-  </section>
-
-  <section id="ledger" class="panel">
-    <details>
-      <summary>Decision ledger</summary>
-      <p>Every finding links to evidence in the JSON report. This table is for review; the scanner does not execute the recommendation.</p>
-      {html_table(["Status", "Confidence", "Category", "Owner", "Path", "Recommended review"], finding_rows, "No findings were reported.")}
-    </details>
-  </section>
-
-  <footer>Clean Your Data &middot; schema {html_escape(report.get("schema_version", "unknown"))} &middot; Offline HTML; review exact paths before sharing.</footer>
-</main>
-</body>
-</html>
-"""
-
-
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Read-only local file organization audit.")
     parser.add_argument("--home", default=str(Path.home()), help="Home directory to analyze. Defaults to current user home.")
     parser.add_argument("--mode", choices=["quick", "full"], default="quick", help="Quick scans known roots; full also scans artifacts.")
-    parser.add_argument("--format", choices=["markdown", "json", "html"], default="markdown", help="Output format.")
+    parser.add_argument("--format", choices=["markdown", "json"], default="markdown", help="Output format for non-interactive runs.")
     parser.add_argument("--output", help="Write report to this path instead of stdout.")
     parser.add_argument("--no-redact", action="store_true", help="Include absolute home path in report metadata and errors. Redaction is enabled by default.")
     parser.add_argument("--min-mb", type=float, default=100.0, help="Minimum child/artifact size to report.")
@@ -1687,18 +2107,49 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--artifacts", action="store_true", help="Scan for node_modules, .venv, build, dist, and similar artifacts.")
     parser.add_argument("--artifact-depth", type=int, default=8, help="Max depth for artifact discovery.")
     parser.add_argument("--artifact-limit", type=int, default=100, help="Max artifacts to report.")
+    parser.add_argument("--duplicates", action="store_true", help="Opt in to local SHA-256 hashing for exact duplicate detection.")
+    parser.add_argument("--duplicate-root", action="append", default=[], help="Additional directory to include in duplicate detection. May be repeated.")
+    parser.add_argument("--duplicate-min-mb", type=float, default=DUPLICATE_DEFAULT_MIN_BYTES / 1024**2, help="Minimum logical file size for duplicate candidates. Defaults to 1 MB; use 0 to include all files.")
+    parser.add_argument("--duplicate-time-budget", type=int, default=DUPLICATE_DEFAULT_TIME_BUDGET_SECONDS, help="Duplicate hashing budget in seconds. Use 0 to disable the time limit.")
+    parser.add_argument("--duplicate-max-mb", type=int, default=DUPLICATE_DEFAULT_MAX_BYTES // 1024**2, help="Maximum logical bytes to hash. Use 0 to disable the byte limit.")
+    parser.add_argument("--duplicate-file-limit", type=int, default=DUPLICATE_DEFAULT_FILE_LIMIT, help="Maximum candidate files to hash. Use 0 to disable the file limit.")
+    parser.add_argument("--interactive", action="store_true", help="Build a bounded metadata-only space map for JSON or the terminal explorer.")
+    parser.add_argument("--tui", action="store_true", help="Open the dependency-free terminal explorer after the read-only scan.")
+    parser.add_argument("--focus-root", "--path", dest="focus_root", action="append", default=[], help="Directory to map interactively. May be repeated; implies --interactive.")
+    parser.add_argument("--focus-depth", type=int, default=2, help="Initial folder depth to scan below each focused path; TUI loads deeper folders when opened.")
+    parser.add_argument("--focus-limit", type=int, default=100, help="Maximum space-map nodes to collect.")
+    parser.add_argument("--focus-timeout", type=int, default=5, help="Per-folder size timeout for the interactive map.")
+    parser.add_argument("--focus-time-budget", type=int, default=30, help="Overall interactive map budget in seconds. Use 0 to disable the time limit.")
     return parser.parse_args(argv)
 
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
+    if args.tui and args.output:
+        print("error: --tui is interactive and cannot write --output", file=sys.stderr)
+        return 2
     start = time.time()
     report = build_report(args)
     report["duration_seconds"] = round(time.time() - start, 3)
+    if args.tui:
+        from audit_tui import run_tui
+
+        home = Path(args.home).expanduser().resolve()
+        redact = not args.no_redact
+
+        def expand_node(node: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
+            return expand_space_map_node(
+                node,
+                home,
+                redact,
+                args.focus_timeout,
+                args.focus_limit,
+                args.focus_time_budget,
+            )
+
+        return run_tui(report, expand_node)
     if args.format == "json":
         output = json.dumps(report, ensure_ascii=False, indent=2)
-    elif args.format == "html":
-        output = render_html(report)
     else:
         output = render_markdown(report)
     if args.output:

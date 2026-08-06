@@ -11,7 +11,7 @@
 
 **Clean Your Data** turns local file sprawl into a privacy-preserving, decision-ready audit. It finds where data accumulates across Desktop, Downloads, AI workspaces, Git repositories, chat and collaboration apps, cloud-sync folders, and rebuildable project artifacts.
 
-It is read-only by default. It does not read private content, upload data, or delete files.
+It is read-only by default. Scans are metadata-only by default; the TUI can show a small, local preview for the selected file. It does not upload data or delete files.
 
 ## Give It To Your Agent
 
@@ -57,15 +57,40 @@ From the repository root:
 python3 audit-local-files/scripts/audit_local_files.py --format markdown
 ```
 
-Open a more readable, self-contained report in a browser or print it to PDF:
+Open the focused terminal explorer:
 
 ```bash
 python3 audit-local-files/scripts/audit_local_files.py \
-  --format html \
-  --output local-file-audit.html
+  --tui \
+  --path ~/Documents/project \
+  --focus-depth 2
 ```
 
-The HTML is generated locally, has no external assets, and starts with the decision state, evidence blockers, and the largest areas before showing the detailed tables. Use JSON for Agent handoff and snapshot comparison.
+The first scan uses depth 2 and shows the root plus its first two levels. Use `Up`/`Down` to move, `gg` to jump to the top, `G` to jump to the bottom, `Home`/`End` for the same endpoints, `PageUp`/`PageDown` to move by a screen, `Left`/`Right` to navigate, `Enter` to load and open the next level or close the selected folder, `a` to open the question box beside the tree, `Enter` to send the question, `Esc` or `Ctrl-C` to cancel it, `c` to copy the metadata-only context, `r` to reload a selected file preview, `?` for help, and `q` to quit. Mouse clicks select an area, double-clicking a folder opens it, and the scroll wheel moves the selection. While the question box is open, `q` is ordinary question text; use `Esc` or `Ctrl-C` to leave it. Folders are shown with a trailing `/`. There is no fixed depth limit in the explorer: deeper folders load when opened.
+
+TUI startup is focused: it measures only the selected `--path` roots before opening and does not run the home-wide audit. Use the non-TUI commands when you want the full home report.
+
+Explore one path as an interactive, metadata-only map:
+
+```bash
+python3 audit-local-files/scripts/audit_local_files.py \
+  --path ~/Documents/project \
+  --focus-depth 2 \
+  --tui
+```
+
+The terminal explorer shows an area's name, path, size, last-change time, and inferred area. Selecting a file also shows a small local text preview, limited to 4 KB and 14 lines; binary files and likely credential files are hidden. Press `a` to enter a question for Codex. When the `codex` CLI is available, it uses a read-only, ephemeral `codex exec` session; otherwise set `CLEAN_YOUR_DATA_AI_COMMAND` to a trusted local command that reads the prompt from stdin. The preview is never included in that prompt. The scanner never makes network requests; pressing `a` hands only metadata to the selected local AI command, whose own authentication and network rules apply.
+
+Find exact duplicates only when you explicitly want content hashing:
+
+```bash
+python3 audit-local-files/scripts/audit_local_files.py \
+  --duplicates \
+  --format markdown \
+  --output duplicate-audit.md
+```
+
+The duplicate pass first groups files by size, then streams SHA-256 locally for candidate files. It does not upload content or expose raw hashes. By default it scans common workspace roots, skips app-managed/cloud-sync roots and rebuildable directories, and reports hard-link aliases and parent-scope overlap so “potential duplicate bytes” is not mistaken for guaranteed reclaimable space. Use `--duplicate-root PATH` only for an explicitly understood additional scope.
 
 Write a local report:
 
@@ -106,7 +131,7 @@ python3 audit-local-files/scripts/compare_reports.py \
   snapshots/before.json snapshots/after.json
 ```
 
-The comparison highlights disk usage, target areas, Codex workspace counts, Git dirty changes, and rebuildable artifacts that changed. Keep snapshots local unless you review their paths first.
+The comparison highlights disk usage, target areas, Codex workspace counts, Git dirty changes, rebuildable artifacts, exact duplicate groups, and interactive-map coverage that changed. Keep snapshots local unless you review their paths first.
 
 ## Evidence, Not Guesswork
 
@@ -115,6 +140,7 @@ The JSON report now carries a small decision contract:
 - `measurement_status` distinguishes measured, timeout, error, missing, and unknown;
 - `coverage` records which target families were actually measured;
 - `findings` links each recommendation to evidence, owner, risk, confidence, and rollback/rebuild guidance;
+- `space_map` records a bounded, keyboard-navigable view of a selected path using names, sizes, dates, and measurement status only;
 - `action_gate` keeps the result in `review_only` when evidence is incomplete or dirty Git work must be preserved.
 
 Validate a saved snapshot before handing it to another Agent:
@@ -123,7 +149,7 @@ Validate a saved snapshot before handing it to another Agent:
 python3 audit-local-files/scripts/validate_report.py snapshots/before.json
 ```
 
-HTML is intended for local review. It follows the report's redaction settings, but you should still review project and folder names before sharing it.
+Terminal output is intended for local review. It follows the report's redaction settings, but you should still review project and folder names before sharing a saved report.
 
 Artifact rows are candidate subsets. They may already be included in a parent workspace total, so the report does not present them as additive reclaimable space.
 
@@ -161,7 +187,9 @@ The scanner collects local metadata only:
 - modification time;
 - optional Git repository and dirty-entry counts.
 
-It does not read chat messages, browser history, email bodies, document text, source code, credentials, or keychains. It does not make network requests and does not upload reports.
+It does not read chat messages, browser history, email bodies, document text, source code, credentials, or keychains. The selected-file preview is a separate local exception: it reads at most 4 KB and 14 lines, skips binary and likely credential files, and is never sent to Codex. The scanner does not make network requests and does not upload reports.
+
+Exact duplicate mode is an explicit exception to the metadata-only default: it reads candidate file bytes locally to calculate SHA-256 matches. It still makes no network requests, stores no raw hashes in the report, and never modifies files.
 
 Reports redact the home directory to `~` by default. Git origin URLs are omitted by default. Review project and folder names before sharing any report publicly. Do not publish reports generated with `--no-redact` or `--include-git-origins`.
 
@@ -188,6 +216,7 @@ Use $audit-local-files to audit my local file organization. Start read-only and 
 - Python 3.9+
 - `du` on macOS/Linux for fast allocated-size measurement
 - `git` only for Git discovery or status checks
+- `curses` and an interactive terminal for `--tui` (standard library on macOS/Linux)
 
 No third-party Python packages are required.
 
@@ -197,7 +226,7 @@ No third-party Python packages are required.
 
 **Clean Your Data** 把电脑里的文件沉积转换成一份隐私友好、可以做决定的本地审计报告。它会检查 Desktop、Downloads、AI 工作区、Git 仓库、微信/飞书等协作 App、本地云盘，以及 `node_modules`、`.venv`、`build` 等可重建产物。
 
-默认只读、只读取元数据，不读取私密正文，不上传数据，也不会删除文件。
+默认只读、只读取元数据；TUI 仅在选中文件时提供受限的本地预览，不上传数据，也不会删除文件。
 
 ### 交给你的 Agent
 
@@ -218,7 +247,7 @@ Codex 可以完成一次分析，但这个仓库把每次都应该保持一致�
 ### 工作流
 
 ```text
-发现 -> 分类 -> 解释 -> 判断风险 -> 生成行动计划 -> 定期比较
+发现 -> 分类 -> 解释 -> 追问 -> 判断风险 -> 生成行动计划 -> 定期比较
 ```
 
 真正要回答的不是“哪里最大”，而是：
@@ -231,14 +260,36 @@ Codex 可以完成一次分析，但这个仓库把每次都应该保持一致�
 python3 audit-local-files/scripts/audit_local_files.py --format markdown
 ```
 
-更适合人直接阅读的离线 HTML 报告：
+更适合人直接阅读的终端交互界面：
 
 ```bash
 python3 audit-local-files/scripts/audit_local_files.py \
-  --format html --output local-file-audit.html
+  --tui --path ~/Documents/project --focus-depth 2
 ```
 
-HTML 会先展示决策状态、证据阻塞项和最大目录，再展开 Git、Codex 工作区、App 数据和可重建产物。它是本地生成的单文件，不依赖网络；JSON 仍用于 Agent 交接和历史比较。
+终端界面第一次只扫描两层目录，显示根目录和下面两层。使用方向键浏览，`gg` 跳到顶部，`G` 跳到底部，`Home`/`End` 跳到两端，`PageUp`/`PageDown` 按屏幕翻页，`Enter` 按需加载下一层或收起当前文件夹，`a` 在树右侧打开问题框，`Enter` 发送问题，`Esc` 或 `Ctrl-C` 取消，`c` 复制只包含元信息的提问上下文，`r` 重新读取文件预览，`?` 查看帮助，`q` 退出。鼠标单击选择区域，双击文件夹展开，滚轮移动选择。问题框打开时，`q` 会作为问题文字输入；要离开问题框请按 `Esc` 或 `Ctrl-C`。文件夹会显示为 `venv/` 这种形式，深度没有固定上限，会在进入时继续加载。界面会保持打开，你可以连续选择不同区域并追问。
+
+TUI 启动时只测量你指定的 `--path`，不会先做整个 home 目录的审计；需要完整 home 报告时使用非 TUI 命令。
+
+如果你想持续追问某个目录，而不是只看一次总表，可以指定路径生成可点击的空间地图：
+
+```bash
+python3 audit-local-files/scripts/audit_local_files.py \
+  --path ~/Documents/project \
+  --focus-depth 2 \
+  --tui
+```
+
+终端界面会展示名称、路径、大小、最后修改时间和所属区域；选中文件后，右侧会显示最多 4 KB、14 行的本地文本预览，二进制文件和疑似凭据文件会隐藏。按 `a` 输入“这个文件夹是干什么的？”之类的问题；如果本机有 `codex` 命令，TUI 会在后台使用只读、临时的 Codex 会话回答，期间仍可移动光标。没有 Codex CLI 时，可以设置可信的 `CLEAN_YOUR_DATA_AI_COMMAND`，让本地命令从 stdin 接收元信息上下文。文件预览不会发送给 Codex；按下 `a` 后，是否联网由本地 Codex 或其他命令自己的配置决定。回答会保留在对应区域，移动回来仍然可见。
+
+如果明确需要查找精确重复文件，可以显式开启本地哈希：
+
+```bash
+python3 audit-local-files/scripts/audit_local_files.py \
+  --duplicates --format markdown --output duplicate-audit.md
+```
+
+该模式先按文件大小筛选候选，再在本机流式计算 SHA-256；不会上传文件，也不会把原始哈希写入报告。默认只扫描常见工作区，排除 App 私有数据、云同步目录和可重建产物，并标注硬链接、父目录和同步范围重叠。“潜在重复空间”是逻辑字节，不等于可以直接删除或一定能回收的空间。只有在明确理解范围后，才使用 `--duplicate-root PATH` 增加目录。
 
 深度模式：
 
@@ -252,17 +303,19 @@ python3 audit-local-files/scripts/audit_local_files.py \
 
 交给其他 Agent 之前，可以先运行 `python3 audit-local-files/scripts/validate_report.py snapshots/before.json` 校验报告契约。
 
-JSON 报告还会区分 `measured`、`timeout`、`error`、`missing` 和 `unknown`，记录 coverage、证据关联的 findings，以及是否因为证据不足或 Git dirty 状态而只能停留在 `review_only`。artifact 可能已经包含在父工作区大小中，不会被当成可回收空间重复相加。
+JSON 报告还会区分 `measured`、`timeout`、`error`、`missing` 和 `unknown`，记录 coverage、证据关联的 findings，以及是否因为证据不足或 Git dirty 状态而只能停留在 `review_only`。artifact 可能已经包含在父工作区大小中，不会被当成可回收空间重复相加；重复组也会记录父目录、硬链接和云同步重叠。
+
+交互地图由 `space_map` 保存。它只扫描指定路径的有限层级，使用名称、大小、修改时间、类别和测量状态；超过时间或节点预算时会明确标记为不完整，不把未知区域当成零空间。
 
 ### 隐私与安全
 
-扫描器只读取路径、占用大小、修改时间和可选的 Git 状态计数；不会读取聊天、浏览器历史、邮件正文、文档正文、源码、凭据或 keychain。默认把 home 目录显示为 `~`，默认不输出 Git origin URL。任何公开分享前，都应检查项目名和文件夹名。
+扫描器只读取路径、占用大小、修改时间和可选的 Git 状态计数；不会读取聊天、浏览器历史、邮件正文、文档正文、源码、凭据或 keychain。选中文件时，TUI 会额外提供一个本地预览例外，最多读取 4 KB、14 行，跳过二进制和疑似凭据文件，且不会发送给 Codex。默认把 home 目录显示为 `~`，默认不输出 Git origin URL。任何公开分享前，都应检查项目名和文件夹名。
 
 项目维护时会使用真实本机审计的聚合匿名证据包，让不同 Agent 角色独立评审，再通过确定性 fixture 和 schema 测试后发布；原始本机报告不会进入仓库。
 
 ### 依赖
 
-Python 3.9+；macOS/Linux 上的 `du`；只有在进行 Git 检查时才需要 `git`。不需要第三方 Python 包。
+Python 3.9+；macOS/Linux 上的 `du`；只有在进行 Git 检查时才需要 `git`；`--tui` 需要支持 `curses` 的交互式终端。若要按 `a` 询问 Codex，还需要本机已登录的 `codex` CLI，或自行配置 `CLEAN_YOUR_DATA_AI_COMMAND`。不需要第三方 Python 包。
 
 ## License
 
