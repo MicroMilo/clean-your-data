@@ -21,3 +21,9 @@ jobs:
         run: python tests/smoke_test.py
       - name: Run contract test
         run: python tests/contract_test.py
+      - name: Run duplicate detection test
+        run: python tests/duplicate_test.py
+      - name: Run interactive map test
+        run: python tests/interactive_test.py
+      - name: Run terminal UI test
+        run: python tests/tui_test.py

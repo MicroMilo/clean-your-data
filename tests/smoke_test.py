@@ -51,7 +51,11 @@ def main() -> int:
         report = json.loads(result.stdout)
         raw = result.stdout
         assert report["read_only"] is True
-        assert report["schema_version"] == "1.1"
+        assert report["schema_version"] == "1.3"
+        assert report["duplicates"]["enabled"] is False
+        assert report["duplicates"]["status"] == "disabled"
+        assert report["space_map"]["enabled"] is False
+        assert report["space_map"]["status"] == "disabled"
         assert report["settings"]["home"] == "~"
         assert report["settings"]["scope_id"] == "home"
         assert report["disk"]["path"] == "~"
@@ -72,18 +76,14 @@ def main() -> int:
         )
         assert artifact_finding["counted_in_total"] is True
 
-        html_command = command.copy()
-        html_command[html_command.index("json")] = "html"
-        html_result = subprocess.run(
-            html_command,
+        help_result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--help"],
             text=True,
             capture_output=True,
             check=True,
         )
-        assert html_result.stdout.lower().startswith("<!doctype html>")
-        assert str(home) not in html_result.stdout
-        assert "Approval required" in html_result.stdout
-        assert "Largest target areas" in html_result.stdout
+        assert "--tui" in help_result.stdout
+        assert "html" not in help_result.stdout.lower()
 
         before = home / "before.json"
         before.write_text(result.stdout, encoding="utf-8")
@@ -109,8 +109,11 @@ def main() -> int:
             check=True,
         )
         comparison_report = json.loads(comparison.stdout)
-        assert comparison_report["schema_version"] == "1.1"
+        assert comparison_report["schema_version"] == "1.3"
         assert "coverage" in comparison_report
+        assert "duplicates" in comparison_report
+        assert comparison_report["space_map"]["before_status"] == "disabled"
+        assert comparison_report["space_map"]["after_status"] == "disabled"
         assert comparison_report["action_gate"]["before"] == "approval_required"
         desktop_change = next(
             row for row in comparison_report["target_areas"] if row["path"] == "~/Desktop"
