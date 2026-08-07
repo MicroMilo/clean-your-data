@@ -1637,11 +1637,11 @@ def action_gate(
     return gate
 
 
-def build_tui_report(args: argparse.Namespace) -> dict[str, Any]:
+def build_tui_report(args: argparse.Namespace, focus_override: Optional[list[str]] = None) -> dict[str, Any]:
     """Build only the focused map needed by the terminal explorer."""
     home = Path(args.home).expanduser().resolve()
     redact = not args.no_redact
-    focus_roots, focus_missing, focus_requested = focus_scan_roots(home, args.focus_root)
+    focus_roots, focus_missing, focus_requested = focus_scan_roots(home, args.focus_root if focus_override is None else focus_override)
     space_map = scan_space_map(
         focus_roots,
         focus_missing,
@@ -2114,7 +2114,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--duplicate-max-mb", type=int, default=DUPLICATE_DEFAULT_MAX_BYTES // 1024**2, help="Maximum logical bytes to hash. Use 0 to disable the byte limit.")
     parser.add_argument("--duplicate-file-limit", type=int, default=DUPLICATE_DEFAULT_FILE_LIMIT, help="Maximum candidate files to hash. Use 0 to disable the file limit.")
     parser.add_argument("--interactive", action="store_true", help="Build a bounded metadata-only space map for JSON or the terminal explorer.")
-    parser.add_argument("--tui", action="store_true", help="Open the dependency-free terminal explorer after the read-only scan.")
+    parser.add_argument("--tui", action="store_true", help="Open the dependency-free terminal explorer after the read-only scan; cleanup remains exact-path and approval-gated.")
     parser.add_argument("--focus-root", "--path", dest="focus_root", action="append", default=[], help="Directory to map interactively. May be repeated; implies --interactive.")
     parser.add_argument("--focus-depth", type=int, default=2, help="Initial folder depth to scan below each focused path; TUI loads deeper folders when opened.")
     parser.add_argument("--focus-limit", type=int, default=100, help="Maximum space-map nodes to collect.")
@@ -2147,7 +2147,13 @@ def main(argv: list[str]) -> int:
                 args.focus_time_budget,
             )
 
-        return run_tui(report, expand_node)
+        def rescan_focused_map(focus_path: Optional[Path] = None) -> dict[str, Any]:
+            if focus_path is None:
+                return build_tui_report(args)
+            target = focus_path if focus_path.is_dir() else focus_path.parent
+            return build_tui_report(args, [str(target)])
+
+        return run_tui(report, expand_node, rescan_focused_map)
     if args.format == "json":
         output = json.dumps(report, ensure_ascii=False, indent=2)
     else:
