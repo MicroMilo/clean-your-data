@@ -495,7 +495,15 @@ def build_launch_command(node: dict[str, Any], action: str) -> list[str]:
             return ["x-terminal-emulator", "--working-directory", target_text]
         if shutil.which("gnome-terminal"):
             return ["gnome-terminal", "--working-directory", target_text]
-        return ["xterm", "-e", f"cd -- {shlex.quote(target_text)} && exec $SHELL"]
+        return [
+            "xterm",
+            "-e",
+            "sh",
+            "-c",
+            'cd -- "$1" && exec "${SHELL:-sh}"',
+            "clean-your-data-terminal",
+            target_text,
+        ]
     if action == "vscode":
         if shutil.which("code"):
             return ["code", "--reuse-window", target_text]
