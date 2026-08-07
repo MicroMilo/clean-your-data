@@ -27,3 +27,9 @@ jobs:
         run: python tests/interactive_test.py
       - name: Run terminal UI test
         run: python tests/tui_test.py
+      - name: Run cleanup loop test
+        run: python tests/cleanup_test.py
+      - name: Run workspace actions test
+        run: python tests/workspace_test.py
+      - name: Run advanced browsing test
+        run: python tests/browse_test.py

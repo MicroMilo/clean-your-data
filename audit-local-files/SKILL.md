@@ -9,12 +9,12 @@ Use this skill as a local data audit protocol with an optional terminal explorer
 
 ## Safety Contract
 
-- Start read-only. Never move, delete, rewrite, or clean files unless the user approves exact paths or an explicit category.
+- Start read-only. The scanner never moves, deletes, rewrites, or cleans files. The TUI may move only an exact path after the user confirms it in the Trash dialog.
 - Inspect metadata by default: path existence, allocated size, modification time, and optional Git status counts. In the TUI, a selected file may show a local preview capped at 4 KB and 14 lines; binary and likely credential files are skipped, and the preview is never included in the Codex prompt.
 - Do not read chat databases, browser history, email bodies, document text, source code, credentials, keychains, or other private contents.
 - Treat Feishu/Lark, WeChat, Slack, Teams, Discord, Telegram, QQ, DingTalk, Zoom, mail, browser, and cloud-sync containers as app-managed or sync-managed state. Recommend the owning app for cleanup.
 - Treat dirty Git repositories and untracked files as user data. Check status before proposing a move.
-- Treat `node_modules`, `.venv`, `build`, `dist`, `.next`, `target`, and similar directories as candidates, not automatic deletions. Explain rebuild cost first.
+- Treat `node_modules`, `.venv`, `build`, `dist`, `.next`, `target`, and similar directories as candidates, not automatic deletions. Explain rebuild cost first. A coding agent may advise on the candidate, but its answer is not permission and cannot execute cleanup.
 - Keep home paths redacted and Git origins omitted. Never use `--no-redact` or `--include-git-origins` for a public report.
 - When the user names a path for closer inspection, keep that path redacted too. The interactive map may expose only home-relative paths by default.
 - Exact duplicate detection is opt-in. Only run `--duplicates` after the user explicitly asks for duplicate matching; it reads candidate file bytes locally for SHA-256, never uploads them, and never changes files.
@@ -43,7 +43,7 @@ python3 scripts/audit_local_files.py \
   --focus-depth 2
 ```
 
-Use `Up`/`Down` to select an area, `gg` to jump to the top, `G` to jump to the bottom, `Home`/`End` for the endpoints, `PageUp`/`PageDown` to move by a screen, `Left`/`Right` to navigate, `Enter` to load and open one more level or close the selected folder, `a` to open the question box beside the tree, `Enter` to send, `Esc` or `Ctrl-C` to cancel, `c` to copy the metadata-only context, `r` to reload a selected file preview, `?` for help, and `q` to quit. Mouse clicks select an area, double-clicking a folder opens it, and the scroll wheel moves the selection. While the question box is open, `q` is question text; use `Esc` or `Ctrl-C` to leave it. Folders are shown with `/`. The initial depth is 2; deeper folders load on demand without a fixed TUI depth limit. TUI startup measures only the selected roots; use a non-TUI command for the full home audit. Use JSON for Agent handoff or snapshot comparison, and Markdown when plain text is more convenient.
+Use `Up`/`Down` to select an area, `gg` to jump to the top, `G` to jump to the bottom, `Home`/`End` for the endpoints, `PageUp`/`PageDown` to move by a screen, `Left`/`Right` to navigate, `Enter` to load and open one more level or close the selected folder, `a` to open the question box beside the tree, `Enter` to send, `Esc` or `Ctrl-C` to cancel, `dd` to stage the selected exact path in the cleanup basket, `Y` to review a Trash move, `y` inside the confirmation dialog to move it, `u` to undo the most recent move, `t` to open Terminal, `v` to open VS Code, `c` to open Cursor, `o` to reveal the path in Finder, `m` to bookmark, `M` to browse bookmarks, `w`/`W` to save or restore the last workspace, `D` to run deep path analysis, `C` to copy the metadata-only context, `r` to reload a selected file preview, `?` for help, and `q` to quit. Mouse clicks select an area, double-clicking a folder opens it, and the scroll wheel moves the selection. While the question box is open, `q` is question text; use `Esc` or `Ctrl-C` to leave it. Folders are shown with `/`. The initial depth is 2; deeper folders load on demand without a fixed TUI depth limit. TUI startup measures only the selected roots; use a non-TUI command for the full home audit. Use JSON for Agent handoff or snapshot comparison, and Markdown when plain text is more convenient.
 
 When the user wants to explore a particular path and keep asking questions, generate the bounded interactive map:
 
@@ -54,7 +54,18 @@ python3 scripts/audit_local_files.py \
   --tui
 ```
 
-The map is metadata-first. It lets the user select a folder or file, inspect its name, path, size, last-change time, category, and measurement state, see a bounded local text preview for files, edit a question, and ask Codex. The Codex call runs in a background worker so navigation remains responsive; the answer stays attached to the selected node. When the `codex` CLI is available, `a` uses a read-only ephemeral session; otherwise set `CLEAN_YOUR_DATA_AI_COMMAND` to a trusted local command that reads the prompt from stdin. Press `c` to copy the metadata-only context. Read `references/interactive-explorer.md` for the contract and follow-up loop.
+The map is metadata-first. It lets the user select a folder or file, inspect its name, path, size, last-change time, category, and measurement state, see a bounded local text preview for files, search loaded nodes fuzzily, filter and sort the tree, edit local tags, switch session-local tabs, edit a question, ask Codex, launch local tools, save a bookmark, and stage a cleanup candidate. The Codex call runs in a background worker so navigation remains responsive; the answer stays attached to the selected node. When the `codex` CLI is available, `a` uses a read-only ephemeral session, while `dd` sends a separate metadata-only cleanup-advisor prompt; neither prompt authorizes or executes a file operation. Otherwise set `CLEAN_YOUR_DATA_AI_COMMAND` to a trusted local command that reads the prompt from stdin. Press `C` to copy the metadata-only context. `D` performs a bounded metadata-only relationship analysis that can connect project markers, source files, dependencies, build directories, outputs, and possible repeated files. Read `references/interactive-explorer.md` for the contract and follow-up loop.
+
+The advanced browsing controls are `/` fuzzy search, `f` filter, `s` sort, `T` local tags, `N` new tab, `gt`/`gT` next or previous tab, and `X` close tab. Search and filters operate only on nodes already loaded into the map; they do not imply that an unopened directory was scanned. Tags are stored locally with the existing workspace state and are not included in reports or Agent prompts.
+
+### TUI Cleanup Loop
+
+`dd` is a Vim-style operator: it stages the exact selected path and does not move anything. The right pane shows two separate layers:
+
+1. **Preliminary scan**: a deterministic local heuristic based on category, size, measurement state, and visible shape.
+2. **Coding agent advice**: a metadata-only, read-only recommendation that explains evidence, unknowns, risks, preconditions, and rollback.
+
+The agent is an advisor, not the authority. `Y` opens a dialog with the exact path; pressing `y` there moves only that path to the platform Trash. The TUI then re-scans only the focused path. The action writes a local undo record to `~/.clean-your-data/cleanup-history.json`; `u` restores the most recent item without overwriting a newer path and refreshes the focused map again. Incomplete measurements, app-managed data, cloud-sync data, unknown paths, the home directory, and the filesystem root are blocked by deterministic local checks.
 
 Use quick mode for the first pass. It inventories known roots and skips expensive Git and child-directory discovery.
 
@@ -142,7 +153,7 @@ If the user requests cleanup, present an approval table before changing anything
 
 Prefer reversible moves to Trash for user-visible folders when the user approves them. Never bulk-delete app containers, cloud-sync roots, dirty repositories, or unknown paths.
 
-If the report's `action_gate.status` is `review_only`, do not produce an executable cleanup plan. Resolve the listed evidence blockers first. The scanner itself never performs cleanup, even when the gate is `approval_required`.
+If the report's `action_gate.status` is `review_only`, do not produce an executable non-TUI cleanup plan. Resolve the listed evidence blockers first. The scanner itself never performs cleanup. The TUI has a separate exact-path gate: `dd` only stages, the coding agent only advises, and the user must confirm the Trash move.
 
 ## Snapshot Comparison
 
@@ -158,7 +169,7 @@ python3 scripts/compare_reports.py before.json after.json
 
 The comparison script reports changes in disk usage, target areas, Codex counts, Git buckets, artifacts, and interactive-map coverage. It preserves whatever redaction was present in the input reports and never reads file contents.
 
-The terminal explorer is a local review surface, not a cleanup command. Review paths and project names before sharing saved JSON or Markdown.
+The terminal explorer is a local review and reversible Trash surface. Review paths and project names before sharing saved JSON or Markdown; cleanup history stays local and is never part of a report.
 
 ## Maintainer Evaluation Loop
 

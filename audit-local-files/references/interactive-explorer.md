@@ -1,6 +1,6 @@
 # Terminal Explorer Contract
 
-The terminal explorer is the product layer on top of the local audit. It gives a user a bounded view of one path and a way to continue the conversation about a selected area without turning the scanner into a cleanup tool.
+The terminal explorer is the product layer on top of the local audit. It gives a user a bounded view of one path, a way to continue the conversation about a selected area, and an explicit reversible Trash loop without turning the scanner itself into a mutating tool.
 
 ## User Loop
 
@@ -10,7 +10,11 @@ select a path
   -> move through the tree
   -> ask a plain-language question
   -> inspect the answer, evidence, and unknowns
-  -> ask a follow-up or run a later comparison
+  -> dd stage an exact cleanup candidate
+  -> inspect preliminary scan and coding-agent advice
+  -> confirm a reversible Trash move
+  -> refresh the focused map
+  -> undo or run a later comparison
 ```
 
 Start it with:
@@ -28,10 +32,23 @@ Controls:
 - `Left` / `Right`: collapse, expand, or move into a folder;
 - `Enter`: load and open one more level, then close the selected folder when pressed again;
 - `a`: open the question box beside the tree; `Enter` sends, `Esc` or `Ctrl-C` cancels. While it is open, `q` is question text;
-- `c`: copy the current metadata-only context;
+- `dd`: stage the selected exact path in the cleanup basket; the first `d` only arms the Vim-style operator;
+- `Y`: open the exact-path Trash confirmation dialog; `y` confirms inside the dialog and `Esc` cancels;
+- `u`: restore the most recent recorded Trash move without overwriting an existing path;
+- `t`: open Terminal at the selected folder (a selected file uses its parent folder);
+- `v`: open VS Code, `c`: open Cursor, and `o`: reveal the selected path in Finder;
+- `m`: bookmark or unbookmark the selected path; `M`: browse bookmarks and recent paths;
+- `w` / `W`: save or restore the last workspace selection;
+- `D`: run a bounded metadata-only relationship analysis for the selected path;
+- `/`: start fuzzy search across loaded names, paths, area labels, categories, and local tags; `Enter` applies and `Esc` cancels;
+- `f`: choose a single view filter for folders, files, large items, recent changes, likely rebuildable paths, bookmarks, cleanup candidates, or tagged paths;
+- `s`: choose sibling sorting by original tree order, name, allocated size, modification time, or kind;
+- `T`: edit comma-separated local tags for the selected path; tagged rows show `@` and the `tagged` filter can find them;
+- `N`: open the selected folder in a new session-local tab; `gt` and `gT` switch tabs; `X` closes the current tab;
+- `C`: copy the current metadata-only context;
 - `r`: reload the selected file preview;
 - `?`: show help;
-- `q`: quit without changing files.
+- `q`: quit without changing files unless a confirmed Trash move was already completed.
 
 Mouse clicks select an area, double-clicking a folder opens it, and the scroll wheel moves the selection. TUI startup measures only the selected roots rather than running the full home audit first.
 
@@ -68,7 +85,7 @@ The generated prompt includes only:
 - measurement status;
 - the user's question.
 
-The prompt asks an Agent to explain likely purpose, supporting evidence, unknowns, and the safest next check. It must not ask the Agent to delete anything merely because the node is large.
+The prompt asks an Agent to explain likely purpose, supporting evidence, unknowns, and the safest next check. The cleanup-advisor prompt additionally asks for a recommendation among keep, review, archive, rebuildable candidate, use the owning app, or do not touch. It labels the scan as preliminary and must not ask the Agent to delete anything or treat its answer as authorization.
 
 When the `codex` CLI is available, `a` starts this read-only ephemeral command automatically:
 
@@ -83,7 +100,21 @@ export CLEAN_YOUR_DATA_AI_COMMAND='my-local-agent --answer'
 python3 scripts/audit_local_files.py --tui --path /path/to/review
 ```
 
-The command receives the prompt on stdin and its stdout is shown as the answer. The request runs in a background worker, so navigation remains available while the spinner runs. Codex authentication, network access, and response handling stay with the host CLI. If no command is available, the report continues to work and `c` remains available for copying the prompt.
+The command receives the prompt on stdin and its stdout is shown as the answer. The request runs in a background worker, so navigation remains available while the spinner runs. Codex authentication, network access, and response handling stay with the host CLI. If no command is available, the report continues to work and `C` remains available for copying the prompt.
+
+## Cleanup Boundary
+
+`dd` never moves a file. It records a candidate in the current TUI session and shows a deterministic preliminary scan explanation. The TUI then asks the configured local coding agent for a separate read-only recommendation using the node's redacted metadata. That recommendation is advisory: it may say keep, review, archive, rebuildable candidate, use the owning app, or do not touch, but it cannot authorize an action or execute a command.
+
+Before `Y` can open, deterministic local checks require an existing, completely measured path that is not the home directory, filesystem root, system Trash, app-managed data, cloud-sync data, or an unknown category. `Y` shows the exact path and size. Only `y` inside that dialog moves the one staged path to the platform Trash. The scanner report remains read-only.
+
+Successful moves are written to the local-only `~/.clean-your-data/cleanup-history.json` file, then the focused map is re-scanned. `u` restores the most recent item if its Trash entry still exists and the original path is not occupied, then refreshes the map again. No report contains cleanup history, and no cleanup operation is sent to the coding agent.
+
+## Path Context, Launchers, and Deep Analysis
+
+The selected node is the shared context for local actions. `t` opens a terminal at the selected folder, while `v`, `c`, and `o` open VS Code, Cursor, or Finder without passing the path through a shell. Moving the cursor does not inject `cd` commands into an existing terminal.
+
+Bookmarks, recent paths, local tags, and the last workspace selection are stored locally in `~/.clean-your-data/workspace-state.json`. They are not added to reports or sent to an Agent. Tabs live only for the current TUI session. Search, filters, and sorting operate over the currently loaded bounded map; a filtered result does not prove that unopened descendants were inspected. `D` scans a selected path in a background worker using names, sizes, extensions, project markers, and directory shape only. It can relate source files to build directories, dependencies, outputs, and possible same-name/same-size matches; those matches are candidates, not confirmed duplicates.
 
 ## Evidence Rules
 
@@ -91,4 +122,4 @@ The command receives the prompt on stdin and its stdout is shown as the answer. 
 - `partial`, `limit`, and `not_found` are orientation results, not complete distribution evidence.
 - A failed size probe is unknown, never zero.
 - Redaction applies to selected paths outside the home directory as well: they appear as `<external>/name` by default.
-- The explorer never authorizes or performs cleanup.
+- The scanner never authorizes or performs cleanup. The TUI performs only the explicit, exact-path Trash move described above.

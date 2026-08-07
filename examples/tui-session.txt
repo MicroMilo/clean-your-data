@@ -1,6 +1,6 @@
 CLEAN YOUR DATA / TERMINAL EXPLORER
 Scope: ~/Documents/projects/atlas  |  Map: Complete  |  Decision: Review first  |  AI: Codex
-READ ONLY  |  Metadata scan  |  Selected text files show a small local preview
+SCAN READ ONLY  |  dd stage candidate  |  Y review  |  y confirm Trash  |  u undo
 UP/DOWN move   gg top   G bottom   PgUp/PgDn scroll   ENTER open/close   A ask Codex   ? help   Q quit
 --------------------------------------------------------------------------------
 
@@ -23,7 +23,7 @@ UP/DOWN move   gg top   G bottom   PgUp/PgDn scroll   ENTER open/close   A ask C
                                                 Press A to open a question box beside this area.
 
 Selected area changed. Press A to ask Codex about it.
-Press ? for help. Q exits the explorer without changing files.
+Press ? for help. dd stages an exact path; it does not move anything.
 
 When app.py is selected:
 
@@ -67,5 +67,35 @@ Example interaction:
 
   Q -> quit the whole explorer. While typing a question, Q is ordinary text;
        use Esc or Ctrl-C to leave the question box first.
+
+Cleanup review:
+
+  dd -> add the selected exact path to the cleanup basket.
+       The right pane shows the preliminary scan separately from the
+       coding agent's metadata-only advice. The advice is not authorization.
+  Y  -> open a dialog showing the exact path and size.
+  y  -> confirm inside that dialog and move the path to system Trash.
+  u  -> restore the most recent Trash move without overwriting a newer path.
+
+Path actions and workspaces:
+
+  t  -> open Terminal at the selected folder.
+  v  -> open VS Code, c -> open Cursor, o -> reveal in Finder.
+  m  -> save or remove a bookmark; M -> browse bookmarks and recent paths.
+  w  -> save the current path and scope; W -> restore the last workspace.
+  D  -> run a bounded metadata-only relationship analysis for the selected path.
+       It can connect project markers, source, dependencies, build folders,
+       outputs, and possible same-name/same-size matches.
+  C  -> copy the metadata-only question context.
+
+Advanced browsing:
+
+  /  -> fuzzy-search the loaded tree. Search matches names, paths, areas,
+       categories, and local tags; Enter applies and Esc cancels.
+  f  -> choose a filter such as files only, large items, rebuildable, or tagged.
+  s  -> choose a sibling sort order such as name, size, or newest first.
+  T  -> edit tags for the selected local path. Enter saves; Esc cancels.
+  N  -> open the selected folder in a new session-local tab.
+  gt -> next tab; gT -> previous tab; X -> close the current tab.
 
   Mouse click -> select. Double-click a folder -> open it. Scroll wheel -> move.

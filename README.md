@@ -42,7 +42,7 @@ The demo uses a sanitized copy of this repository under `~/audit-local-files`. I
 ## Privacy Boundary
 
 - Read-only by default. The initial map reads metadata, not file contents.
-- No uploads and no cleanup actions. The TUI preview is local and bounded to 4 KB and 14 lines.
+- No uploads. The scanner never changes files; the TUI can move only an exact, user-confirmed path to the system Trash.
 - Exact duplicate matching is opt-in and hashes candidate files locally; raw hashes are not written to reports.
 - Home paths are redacted to `~` by default. Review project and folder names before sharing a report.
 
@@ -99,7 +99,19 @@ python3 audit-local-files/scripts/audit_local_files.py \
   --focus-depth 2
 ```
 
-The first scan uses depth 2 and shows the root plus its first two levels. Use `Up`/`Down` to move, `gg` to jump to the top, `G` to jump to the bottom, `Home`/`End` for the same endpoints, `PageUp`/`PageDown` to move by a screen, `Left`/`Right` to navigate, `Enter` to load and open the next level or close the selected folder, `a` to open the question box beside the tree, `Enter` to send the question, `Esc` or `Ctrl-C` to cancel it, `c` to copy the metadata-only context, `r` to reload a selected file preview, `?` for help, and `q` to quit. Mouse clicks select an area, double-clicking a folder opens it, and the scroll wheel moves the selection. While the question box is open, `q` is ordinary question text; use `Esc` or `Ctrl-C` to leave it. Folders are shown with a trailing `/`. There is no fixed depth limit in the explorer: deeper folders load when opened.
+The first scan uses depth 2 and shows the root plus its first two levels. The explorer has no fixed depth limit: deeper folders load when opened, and folders always carry a trailing `/`.
+
+Core navigation is `Up`/`Down` or `j`/`k`, `Left`/`Right` or `h`/`l`, `Enter` to open/close, `gg`/`G` for the endpoints, `Home`/`End` for the same endpoints, and `PageUp`/`PageDown` for a screen. Mouse clicks select an area, double-clicking a folder opens it, and the scroll wheel moves the selection. Press `?` for the complete key list and `q` to quit.
+
+Advanced browsing is always available from the same tree:
+
+- `/` fuzzy-searches loaded names, paths, areas, and tags;
+- `f` filters to folders, files, large items, recent changes, likely rebuildable paths, bookmarks, cleanup candidates, or tagged paths;
+- `s` sorts each sibling group by tree order, name, allocated size, modification time, or kind;
+- `T` edits comma-separated local tags; `@` marks tagged rows;
+- `N` opens the selected folder in a new tab; `gt`/`gT` switch tabs; `X` closes the current tab.
+
+Search, filter, and sort are view controls over the current metadata map. They do not rescan or change files. While `/` or `T` is editing, `Enter` applies, `Esc` cancels, and `Ctrl-U` clears the input.
 
 TUI startup is focused: it measures only the selected `--path` roots before opening and does not run the home-wide audit. Use the non-TUI commands when you want the full home report.
 
@@ -113,6 +125,10 @@ python3 audit-local-files/scripts/audit_local_files.py \
 ```
 
 The terminal explorer shows an area's name, path, size, last-change time, and inferred area. Selecting a file also shows a small local text preview, limited to 4 KB and 14 lines; binary files and likely credential files are hidden. Press `a` to enter a question for Codex. When the `codex` CLI is available, it uses a read-only, ephemeral `codex exec` session; otherwise set `CLEAN_YOUR_DATA_AI_COMMAND` to a trusted local command that reads the prompt from stdin. The preview is never included in that prompt. The scanner never makes network requests; pressing `a` hands only metadata to the selected local AI command, whose own authentication and network rules apply.
+
+The selected path is also the context for local actions: `t` opens Terminal, `v` opens VS Code, `c` opens Cursor, and `o` reveals the path in Finder. `a` opens the Codex question box beside the tree, `m` saves a bookmark, `M` browses bookmarks and recent paths, `w` saves the current workspace, and `W` restores it. `D` runs a bounded metadata-only relationship analysis that connects project markers, source files, dependencies, build folders, outputs, and possible repeated files. These local actions do not pass paths through a shell. Bookmarks, tags, recents, and the last workspace stay in the local `~/.clean-your-data/workspace-state.json` file and are never added to reports.
+
+Tabs are session-local views. Opening a tab on a selected folder keeps that path's report, selection, search, filter, and sort state available while you inspect another area. Closing a tab does not touch its files.
 
 Find exact duplicates only when you explicitly want content hashing:
 
@@ -145,7 +161,15 @@ python3 audit-local-files/scripts/audit_local_files.py \
   --output local-file-audit-full.md
 ```
 
-The scanner never changes the scanned files. Cleanup or migration is a separate, approval-gated decision.
+The scanner never changes the scanned files. In the TUI, cleanup is a separate, approval-gated action: `dd` stages a candidate, the local coding agent gives a preliminary metadata-only recommendation, and an explicit confirmation moves the exact path to system Trash. Press `u` to undo the most recent move during the session. App-managed data, cloud-sync roots, unknown paths, and incomplete measurements are blocked.
+
+### Safe Cleanup Loop
+
+```text
+select -> dd stage -> preliminary scan -> coding-agent advice -> review exact path -> y confirm -> system Trash -> refresh map -> u undo
+```
+
+The initial scan is evidence, not permission. The agent's recommendation is advisory and cannot execute a command. After a successful move or restore, the TUI re-scans only the focused path. It also records the original path locally so an approved Trash move can be restored without overwriting a newer path.
 
 ## Compare Audits Over Time
 
@@ -182,7 +206,7 @@ Validate a saved snapshot before handing it to another Agent:
 python3 audit-local-files/scripts/validate_report.py snapshots/before.json
 ```
 
-Terminal output is intended for local review. It follows the report's redaction settings, but you should still review project and folder names before sharing a saved report.
+Terminal output is intended for local review. It follows the report's redaction settings, but you should still review project and folder names before sharing a saved report. TUI bookmarks, recent paths, and the last workspace are stored locally in `~/.clean-your-data/workspace-state.json` and are never included in reports.
 
 Artifact rows are candidate subsets. They may already be included in a parent workspace total, so the report does not present them as additive reclaimable space.
 
@@ -259,7 +283,7 @@ No third-party Python packages are required.
 
 **Clean Your Data** 把电脑里的文件沉积转换成一份隐私友好、可以做决定的本地审计报告。它会检查 Desktop、Downloads、AI 工作区、Git 仓库、微信/飞书等协作 App、本地云盘，以及 `node_modules`、`.venv`、`build` 等可重建产物。
 
-默认只读、只读取元数据；TUI 仅在选中文件时提供受限的本地预览，不上传数据，也不会删除文件。
+默认只读、只读取元数据；TUI 仅在选中文件时提供受限的本地预览，不上传数据。清理时必须先用 `dd` 加入候选，再确认精确路径；确认后只移入系统废纸篓，不做永久删除，动作完成后会重新扫描指定路径，`u` 可以撤销最近一次移动。
 
 ### 交给你的 Agent
 
@@ -300,7 +324,7 @@ python3 audit-local-files/scripts/audit_local_files.py \
   --tui --path ~/Documents/project --focus-depth 2
 ```
 
-终端界面第一次只扫描两层目录，显示根目录和下面两层。使用方向键浏览，`gg` 跳到顶部，`G` 跳到底部，`Home`/`End` 跳到两端，`PageUp`/`PageDown` 按屏幕翻页，`Enter` 按需加载下一层或收起当前文件夹，`a` 在树右侧打开问题框，`Enter` 发送问题，`Esc` 或 `Ctrl-C` 取消，`c` 复制只包含元信息的提问上下文，`r` 重新读取文件预览，`?` 查看帮助，`q` 退出。鼠标单击选择区域，双击文件夹展开，滚轮移动选择。问题框打开时，`q` 会作为问题文字输入；要离开问题框请按 `Esc` 或 `Ctrl-C`。文件夹会显示为 `venv/` 这种形式，深度没有固定上限，会在进入时继续加载。界面会保持打开，你可以连续选择不同区域并追问。
+终端界面第一次只扫描两层目录，显示根目录和下面两层。使用方向键浏览，`gg` 跳到顶部，`G` 跳到底部，`Home`/`End` 跳到两端，`PageUp`/`PageDown` 按屏幕翻页，`Enter` 按需加载下一层或收起当前文件夹，`a` 在树右侧打开问题框，`Enter` 发送问题，`Esc` 或 `Ctrl-C` 取消，`t` 在当前目录打开 Terminal，`v` 用 VS Code 打开，`c` 用 Cursor 打开，`o` 在 Finder 中定位，`m`/`M` 管理书签，`w`/`W` 保存或恢复工作区，`D` 深度分析当前路径，`dd` 把选中的精确路径加入清理篮，`Y` 打开废纸篓确认框，确认框中按 `y` 执行，`u` 撤销最近一次移动，`C` 复制只包含元信息的提问上下文，`r` 重新读取文件预览，`?` 查看帮助，`q` 退出。`dd` 不会立即移动文件；右侧会分别显示初步扫描结论和 coding agent 的建议。鼠标单击选择区域，双击文件夹展开，滚轮移动选择。问题框打开时，`q` 会作为问题文字输入；要离开问题框请按 `Esc` 或 `Ctrl-C`。文件夹会显示为 `venv/` 这种形式，深度没有固定上限，会在进入时继续加载。
 
 TUI 启动时只测量你指定的 `--path`，不会先做整个 home 目录的审计；需要完整 home 报告时使用非 TUI 命令。
 
@@ -313,7 +337,7 @@ python3 audit-local-files/scripts/audit_local_files.py \
   --tui
 ```
 
-终端界面会展示名称、路径、大小、最后修改时间和所属区域；选中文件后，右侧会显示最多 4 KB、14 行的本地文本预览，二进制文件和疑似凭据文件会隐藏。按 `a` 输入“这个文件夹是干什么的？”之类的问题；如果本机有 `codex` 命令，TUI 会在后台使用只读、临时的 Codex 会话回答，期间仍可移动光标。没有 Codex CLI 时，可以设置可信的 `CLEAN_YOUR_DATA_AI_COMMAND`，让本地命令从 stdin 接收元信息上下文。文件预览不会发送给 Codex；按下 `a` 后，是否联网由本地 Codex 或其他命令自己的配置决定。回答会保留在对应区域，移动回来仍然可见。
+终端界面会展示名称、路径、大小、最后修改时间和所属区域；选中文件后，右侧会显示最多 4 KB、14 行的本地文本预览，二进制文件和疑似凭据文件会隐藏。按 `a` 输入“这个文件夹是干什么的？”之类的问题；如果本机有 `codex` 命令，TUI 会在后台使用只读、临时的 Codex 会话回答，期间仍可移动光标。按 `D` 会在后台做一次只读取元信息的深度分析，尝试关联项目标记、源码、依赖、构建目录、输出目录和可能重复的文件。按 `dd` 后，TUI 会用另一条只包含元信息的清理顾问请求，让 coding agent 判断“保留、复核、归档、可重建候选、交给所属应用或不要触碰”；这只是初步建议，不是删除授权。没有 Codex CLI 时，可以设置可信的 `CLEAN_YOUR_DATA_AI_COMMAND`，让本地命令从 stdin 接收元信息上下文。文件预览不会发送给 Codex；按下 `a` 或 `dd` 后，是否联网由本地 Codex 或其他命令自己的配置决定。回答会保留在对应区域，移动回来仍然可见。
 
 如果明确需要查找精确重复文件，可以显式开启本地哈希：
 
@@ -342,13 +366,13 @@ JSON 报告还会区分 `measured`、`timeout`、`error`、`missing` 和 `unknow
 
 ### 隐私与安全
 
-扫描器只读取路径、占用大小、修改时间和可选的 Git 状态计数；不会读取聊天、浏览器历史、邮件正文、文档正文、源码、凭据或 keychain。选中文件时，TUI 会额外提供一个本地预览例外，最多读取 4 KB、14 行，跳过二进制和疑似凭据文件，且不会发送给 Codex。默认把 home 目录显示为 `~`，默认不输出 Git origin URL。任何公开分享前，都应检查项目名和文件夹名。
+扫描器只读取路径、占用大小、修改时间和可选的 Git 状态计数；不会读取聊天、浏览器历史、邮件正文、文档正文、源码、凭据或 keychain。选中文件时，TUI 会额外提供一个本地预览例外，最多读取 4 KB、14 行，跳过二进制和疑似凭据文件，且不会发送给 Codex。默认把 home 目录显示为 `~`，默认不输出 Git origin URL。清理历史保存在本机 `~/.clean-your-data/cleanup-history.json`，书签、最近路径和最后工作区保存在 `~/.clean-your-data/workspace-state.json`；这些文件只在本地使用，不会写入报告或上传。任何公开分享前，都应检查项目名和文件夹名。
 
 项目维护时会使用真实本机审计的聚合匿名证据包，让不同 Agent 角色独立评审，再通过确定性 fixture 和 schema 测试后发布；原始本机报告不会进入仓库。
 
 ### 依赖
 
-Python 3.9+；macOS/Linux 上的 `du`；只有在进行 Git 检查时才需要 `git`；`--tui` 需要支持 `curses` 的交互式终端。若要按 `a` 询问 Codex，还需要本机已登录的 `codex` CLI，或自行配置 `CLEAN_YOUR_DATA_AI_COMMAND`。不需要第三方 Python 包。
+Python 3.9+；macOS/Linux 上的 `du`；只有在进行 Git 检查时才需要 `git`；`--tui` 需要支持 `curses` 的交互式终端。若要按 `a` 或 `dd` 询问 Codex，还需要本机已登录的 `codex` CLI，或自行配置 `CLEAN_YOUR_DATA_AI_COMMAND`；`D` 的深度关系分析只使用 Python 标准库。`t`/`v`/`c`/`o` 会调用本机已有的 Terminal、VS Code、Cursor 或 Finder；移动到系统废纸篓使用本机文件系统，不需要第三方 Python 包。
 
 ## License
 
