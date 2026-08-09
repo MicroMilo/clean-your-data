@@ -1,0 +1,5 @@
+include LICENSE
+include README.md
+include CHANGELOG.md
+recursive-include audit-local-files *.md *.yaml
+recursive-include audit-local-files/scripts *.py

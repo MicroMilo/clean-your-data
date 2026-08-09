@@ -5,7 +5,7 @@ description: Turn local file sprawl into a privacy-preserving, decision-ready au
 
 # Clean Your Data
 
-Use this skill as a local data audit protocol with an optional terminal explorer. The goal is not to produce a large directory listing. The goal is to explain what is accumulating, who owns it, what is durable or rebuildable, what is risky, and what the user can safely do next.
+Use this skill as a local data audit protocol around the `cyd` terminal file-system interface. The package is the primary user experience; the skill is the optional Agent bridge. The goal is not to produce a large directory listing. The goal is to explain what is accumulating, who owns it, what is durable or rebuildable, what is risky, and what the user can safely do next.
 
 ## Safety Contract
 
@@ -27,6 +27,20 @@ Use this skill as a local data audit protocol with an optional terminal explorer
 If the user does not name a path, use the current user's home directory. State that the first pass is local, read-only, metadata-only, and anonymized.
 
 ### 2. Run the first audit
+
+Prefer the installed package when it is available:
+
+```bash
+cyd --format markdown
+```
+
+For a human-controlled interactive session:
+
+```bash
+cyd /path/to/review
+```
+
+Use the repository script below only when the package is not installed or when working from a checkout.
 
 From the skill directory, run:
 

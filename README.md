@@ -5,39 +5,44 @@
 [![Release](https://img.shields.io/github/v/release/MicroMilo/clean-your-data?display_name=tag)](https://github.com/MicroMilo/clean-your-data/releases)
 
 <p align="center">
-  <img src="assets/github-social-preview-v1.png" alt="Clean Your Data: a safe map before you clean" width="100%">
+  <img src="https://raw.githubusercontent.com/MicroMilo/clean-your-data/main/assets/github-social-preview-v1.png" alt="Clean Your Data: a safe map before you clean" width="100%">
 </p>
 
-**A privacy-first disk investigator for AI agents.**
+**A local-first file system interface for humans and AI agents.**
 
-Ask what is safe to review before deleting files.
+Browse any path, understand what lives there, and take reversible actions.
 
-**Clean Your Data** turns local file sprawl into a decision-ready map. It helps an agent explain what is taking space, what owns it, what is rebuildable, and what should be reviewed before any cleanup.
+**Clean Your Data** is a keyboard-first terminal disk explorer. It turns an opaque folder into a navigable map with search, filters, sorting, tabs, file previews, local AI questions, duplicate detection, and approval-gated moves to Trash. It is built for humans first, with a metadata contract that local Agents can understand.
 
 <p align="center">
-  <img src="assets/clean-your-data-demo.gif" alt="Real terminal demo of Clean Your Data" width="100%">
+  <img src="https://raw.githubusercontent.com/MicroMilo/clean-your-data/main/assets/clean-your-data-demo.gif" alt="Real terminal demo of Clean Your Data" width="100%">
 </p>
 
 <p align="center">
-  <a href="assets/clean-your-data-demo.mp4">Watch or download the 20-second MP4 demo</a>
+  <a href="https://raw.githubusercontent.com/MicroMilo/clean-your-data/main/assets/clean-your-data-demo.mp4">Watch or download the 20-second MP4 demo</a>
 </p>
 
-## Start In 3 Steps
+## Install And Explore
+
+Install the package and launch the explorer from any directory:
 
 ```bash
-# 1. Get the skill
-git clone https://github.com/MicroMilo/clean-your-data.git
+# Install the current GitHub version immediately.
+uv tool install git+https://github.com/MicroMilo/clean-your-data.git
 
-# 2. Install it for Codex
-mkdir -p ~/.codex/skills
-cp -R clean-your-data/audit-local-files ~/.codex/skills/audit-local-files
-
-# 3. Explore a path you choose (replace PATH)
-python3 ~/.codex/skills/audit-local-files/scripts/audit_local_files.py \
-  --tui --path PATH --focus-depth 2
+# Explore the current directory, or pass any path you want to inspect.
+cyd
+cyd ~/Documents/project
 ```
 
-The demo uses a sanitized copy of this repository under `~/audit-local-files`. It does not use a real user's home directory, `~/github`, or `node_modules`.
+When the package is published to PyPI, the install becomes:
+
+```bash
+python3 -m pip install --user clean-your-data
+# or: uv tool install clean-your-data
+```
+
+For a checkout under development, run `python3 -m pip install .`. `cyd --version` prints the installed version. The demo uses a sanitized copy of this repository; it does not use a real user's home directory, `~/github`, or `node_modules`.
 
 ## Privacy Boundary
 
@@ -58,19 +63,19 @@ Use a message like this:
 
 The agent can clone the repository, read `audit-local-files/SKILL.md`, and run the bundled scanner locally. The GitHub page itself never receives access to the user's computer.
 
-## Why Use This Instead Of Asking Codex Directly?
+## Why Use This Instead Of A Shell Or One-Off Prompt?
 
-Codex can perform a one-off analysis. This repository packages the part that should be consistent every time:
+You can always ask an Agent to inspect a folder. `cyd` is useful when you want a persistent, human-controlled workspace for that inspection:
 
-| Direct prompt | Clean Your Data |
+| A shell or one-off prompt | Clean Your Data |
 | --- | --- |
-| You decide what to inspect | A curated inventory covers common workspaces, app state, cloud sync, AI tools, Git, and artifacts |
-| The safety boundary depends on your wording | Read-only, metadata-only, redacted defaults are part of the workflow |
-| Results vary from prompt to prompt | A stable taxonomy separates assets, workspaces, app-managed data, caches, and unknowns |
-| You get a list of large folders | You get an explanation, risk level, owner-aware action, and approval gate |
-| It is easy to repeat inconsistently | Save JSON snapshots and compare what grew over time |
+| A list of paths or a one-off answer | A live, keyboard-first map you can keep exploring |
+| You decide what to inspect from memory | Search, filters, sorting, bookmarks, tags, and tabs keep context visible |
+| Deletion is easy to make irreversible | Exact-path staging, review, Trash moves, and undo keep actions reversible |
+| An Agent sees an ad hoc prompt | The local metadata context is structured and safe to hand to an Agent |
+| You repeat the same investigation manually | Save snapshots and compare what grew over time |
 
-The skill is not a replacement for Codex. It is a reusable local-audit protocol that gives Codex reliable coverage, privacy boundaries, and a repeatable output contract.
+The optional Skill adds a repeatable audit protocol for Agents. The package is the main product: a local file-system interface that gives people control and gives Agents clean context.
 
 ## The Workflow
 
@@ -84,7 +89,13 @@ The useful question is not only “what is large?” It is:
 
 ## Quick Start
 
-From the repository root:
+After installing the package:
+
+```bash
+cyd ~/Documents/project
+```
+
+From the repository root, the compatibility script still works:
 
 ```bash
 python3 audit-local-files/scripts/audit_local_files.py --format markdown
@@ -252,7 +263,7 @@ Reports redact the home directory to `~` by default. Git origin URLs are omitted
 
 The scanner does not perform cleanup. App-managed data should be handled by the owning app; rebuildable artifacts should be removed only after their exact paths, rebuild cost, and rollback options are understood.
 
-## Install As A Codex Skill
+## Install As A Codex Skill (Optional)
 
 An agent can install the `audit-local-files/` directory as a Codex skill. For a manual local install:
 
@@ -313,6 +324,21 @@ Codex 可以完成一次分析，但这个仓库把每次都应该保持一致�
 
 ### 快速运行
 
+安装包后，从任意目录打开磁盘浏览器：
+
+```bash
+# 直接安装 GitHub 当前版本
+uv tool install git+https://github.com/MicroMilo/clean-your-data.git
+
+# 浏览当前目录，或传入指定路径
+cyd
+cyd ~/Documents/project
+```
+
+开发仓库时可以在仓库根目录执行 `python3 -m pip install .`。发布到 PyPI 后，也可以执行 `python3 -m pip install --user clean-your-data`。`cyd --version` 查看版本。
+
+旧的脚本入口仍然保留，方便已有用户和 Agent 继续使用：
+
 ```bash
 python3 audit-local-files/scripts/audit_local_files.py --format markdown
 ```
@@ -372,7 +398,7 @@ JSON 报告还会区分 `measured`、`timeout`、`error`、`missing` 和 `unknow
 
 ### 依赖
 
-Python 3.9+；macOS/Linux 上的 `du`；只有在进行 Git 检查时才需要 `git`；`--tui` 需要支持 `curses` 的交互式终端。若要按 `a` 或 `dd` 询问 Codex，还需要本机已登录的 `codex` CLI，或自行配置 `CLEAN_YOUR_DATA_AI_COMMAND`；`D` 的深度关系分析只使用 Python 标准库。`t`/`v`/`c`/`o` 会调用本机已有的 Terminal、VS Code、Cursor 或 Finder；移动到系统废纸篓使用本机文件系统，不需要第三方 Python 包。
+安装包没有第三方运行时依赖。需要 Python 3.9+；macOS/Linux 上的 `du`；只有在进行 Git 检查时才需要 `git`；TUI 需要支持 `curses` 的交互式终端。若要按 `a` 或 `dd` 询问 Codex，还需要本机已登录的 `codex` CLI，或自行配置 `CLEAN_YOUR_DATA_AI_COMMAND`；`D` 的深度关系分析只使用 Python 标准库。`t`/`v`/`c`/`o` 会调用本机已有的 Terminal、VS Code、Cursor 或 Finder；移动到系统废纸篓使用本机文件系统。
 
 ## License
 
