@@ -25,6 +25,7 @@ def load_scanner():
 
 def main() -> int:
     scanner = load_scanner()
+    implementation = sys.modules[scanner.scan_targets.__module__]
     with tempfile.TemporaryDirectory() as tmp:
         home = Path(tmp)
         (home / "Desktop").mkdir()
@@ -33,11 +34,11 @@ def main() -> int:
         def timed_out(_path: Path, _timeout: int):
             return None, "simulated timeout", True
 
-        scanner.du_size = timed_out
+        implementation.du_size = timed_out
         try:
             records = scanner.scan_targets(home, 1, None, True)
         finally:
-            scanner.du_size = original_du_size
+            implementation.du_size = original_du_size
 
         desktop = next(row for row in records if row["label"] == "Desktop")
         assert desktop["allocated_bytes"] is None

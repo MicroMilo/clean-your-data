@@ -4,6 +4,9 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+build/
+dist/
+*.egg-info/
 local-file-audit*.md
 local-file-audit*.json
 local-file-audit*.html
