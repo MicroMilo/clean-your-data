@@ -61,7 +61,69 @@ def main() -> int:
             )
             assert tui.cleanup_gate(node)[0] is True
             assert tui.cleanup_gate(dict(node, category="app-state"))[0] is False
+            protected_root = root / "project"
+            protected_root.mkdir()
+            root_node = dict(
+                node,
+                node_id="root-node",
+                name="project",
+                kind="folder",
+                _local_path=str(protected_root),
+            )
+            assert tui.cleanup_gate(root_node)[0] is False
+            assert "scope" in tui.cleanup_gate(root_node)[1]
+
+            git_dir = protected_root / ".git"
+            git_dir.mkdir()
+            git_node = dict(
+                root_node,
+                node_id="git-node",
+                parent_id="root-node",
+                name=".git",
+                _local_path=str(git_dir),
+            )
+            assert tui.cleanup_gate(git_node)[0] is False
+            assert "protected" in tui.cleanup_gate(git_node)[1]
+
+            env_file = protected_root / ".env"
+            env_file.write_text("TOKEN=fixture\n", encoding="utf-8")
+            env_node = dict(
+                node,
+                node_id="env-node",
+                parent_id="root-node",
+                name=".env",
+                _local_path=str(env_file),
+            )
+            assert tui.cleanup_gate(env_node)[0] is False
+            assert "credential" in tui.cleanup_gate(env_node)[1]
+            production_env = protected_root / ".env.production"
+            production_env.write_text("TOKEN=fixture\n", encoding="utf-8")
+            production_env_node = dict(env_node, name=production_env.name, _local_path=str(production_env))
+            assert tui.cleanup_gate(production_env_node)[0] is False
             assert "preliminary" in tui.cleanup_prompt(node).lower()
+
+            original = root / "replace-me.txt"
+            original.write_text("original\n", encoding="utf-8")
+            original_stat = original.lstat()
+            replacement_node = dict(
+                node,
+                node_id="replacement-node",
+                name=original.name,
+                _local_path=str(original),
+                _stat_device=original_stat.st_dev,
+                _stat_inode=original_stat.st_ino,
+                _stat_mode=original_stat.st_mode,
+            )
+            original.unlink()
+            original.write_text("replacement\n", encoding="utf-8")
+            assert tui.cleanup_gate(replacement_node)[0] is False
+            assert "changed since" in tui.cleanup_gate(replacement_node)[1]
+            try:
+                tui.move_to_trash(Path(replacement_node["_local_path"]), node=replacement_node, trash_root=trash, history_path=history)
+            except ValueError as exc:
+                assert "changed since" in str(exc)
+            else:
+                raise AssertionError("the Trash operation must re-check path identity immediately before moving")
 
             assert tui.handle_key(None, state, "d", 80) is True
             assert state.vim_pending_d is True
@@ -90,6 +152,33 @@ def main() -> int:
             assert source.exists()
             assert [item["name"] for item in state.nodes] == [source.name]
             assert state.cleanup_history[-1]["status"] == "restored"
+
+            first_record = tui.move_to_trash(source, node=node, trash_root=trash, history_path=history)
+            tui.restore_trash_record(first_record, history)
+            second_record = tui.move_to_trash(source, node=node, trash_root=trash, history_path=history)
+            assert first_record["record_id"] != second_record["record_id"]
+            tui.restore_trash_record(second_record, history)
+
+            rollback_record = tui.move_to_trash(source, node=node, trash_root=trash, history_path=history)
+            function_globals = tui.restore_trash_record.__globals__
+            original_save_history = function_globals["save_cleanup_history"]
+
+            def fail_restore_history(*_args, **_kwargs):
+                raise OSError("fixture history failure")
+
+            function_globals["save_cleanup_history"] = fail_restore_history
+            try:
+                try:
+                    tui.restore_trash_record(rollback_record, history)
+                except RuntimeError as exc:
+                    assert "rolled back" in str(exc)
+                else:
+                    raise AssertionError("a failed history write must roll the restore back into Trash")
+            finally:
+                function_globals["save_cleanup_history"] = original_save_history
+            assert not source.exists()
+            assert Path(str(rollback_record["trash_path"])).exists()
+            tui.restore_trash_record(rollback_record, history)
     finally:
         if previous_ai is None:
             os.environ.pop("CLEAN_YOUR_DATA_AI_COMMAND", None)

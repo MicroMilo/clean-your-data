@@ -17,5 +17,9 @@ Security-sensitive issues include:
 - Moving a path without the exact-path confirmation flow, or bypassing the system Trash and undo record.
 - Overwriting an existing path during undo.
 - Passing a selected path through shell interpolation instead of a direct argument when opening Terminal, VS Code, Cursor, or Finder.
+- Exposing the GUI beyond loopback, accepting an unauthenticated API request, or returning internal absolute paths in a public API response.
+- Storing provider API keys in the Clean Your Data AI configuration.
 
-The scanner should remain read-only. The TUI's only mutating operation is an explicit move of one measured, eligible path into system Trash after `dd`, `Y`, and `y`; it must never permanently delete, bulk-delete, or touch app-managed, cloud-sync, unknown, home, or root paths.
+The scanner should remain read-only. GUI and TUI may mutate files only through an explicit move of measured, eligible, exactly confirmed paths into system Trash. They must never permanently delete or touch the active scan root, home/root, Trash, VCS metadata, credential stores, credential configuration, app-managed data, cloud-sync roots, unknown paths, or incomplete measurements.
+
+The GUI must bind to `127.0.0.1`, validate the loopback Host, require a random per-run token on every API request, reject cross-origin browser requests, return no internal `_local_path`, apply a restrictive content security policy, and avoid exposing tracebacks to the browser. Custom AI commands must be parsed into direct arguments and must never be executed through a shell.

@@ -31,6 +31,10 @@ jobs:
         run: python tests/interactive_test.py
       - name: Run terminal UI test
         run: python tests/tui_test.py
+      - name: Run local GUI test
+        run: python tests/gui_test.py
+      - name: Run Agent trace test
+        run: python tests/trace_test.py
       - name: Run cleanup loop test
         run: python tests/cleanup_test.py
       - name: Run workspace actions test

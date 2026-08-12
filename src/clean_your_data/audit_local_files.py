@@ -1386,6 +1386,9 @@ def scan_space_map(
             # Private in-memory context for the local TUI. It is never emitted
             # by JSON/Markdown output and is needed for lazy expansion/preview.
             node["_local_path"] = str(path)
+            node["_stat_device"] = int(path_stat.st_dev)
+            node["_stat_inode"] = int(path_stat.st_ino)
+            node["_stat_mode"] = int(path_stat.st_mode)
         nodes.append(node)
         may_descend = not should_skip_dir(path) or (allow_skipped_root and depth == 0)
         if depth >= max_depth or not node["can_expand"] or not may_descend:

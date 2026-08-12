@@ -1,0 +1,1353 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Clean Your Data</title>
+  <style>
+    :root {
+      --bg: #e9eeec;
+      --surface: #fff;
+      --soft: #f6f8f7;
+      --ink: #17211e;
+      --muted: #6d7b76;
+      --line: #dce4e0;
+      --line-strong: #c5d1cc;
+      --green: #177a55;
+      --green-dark: #0f5c40;
+      --green-soft: #e6f4ed;
+      --blue: #386b9e;
+      --blue-soft: #e9f1f8;
+      --amber: #956310;
+      --amber-soft: #fff3dc;
+      --red: #9b4545;
+      --red-soft: #faeaea;
+      --violet: #6856a5;
+      --violet-soft: #eeebf8;
+      --shadow: 0 18px 45px rgba(29, 49, 43, .12);
+    }
+
+    * { box-sizing: border-box; }
+    html, body { min-width: 320px; min-height: 100%; }
+    body {
+      margin: 0;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--ink);
+      font: 14px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+    }
+    button, input, select { font: inherit; }
+    button { cursor: pointer; }
+    button:disabled { cursor: default; opacity: .45; }
+    [hidden] { display: none !important; }
+
+    .app {
+      display: grid;
+      grid-template-columns: 206px minmax(0, 1fr);
+      height: 100vh;
+    }
+
+    .sidebar {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      border-right: 1px solid var(--line);
+      background: #f7f9f8;
+      padding: 17px 12px 13px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 8px 19px;
+    }
+    .brand-mark {
+      display: grid;
+      place-items: center;
+      width: 32px;
+      height: 32px;
+      flex: 0 0 auto;
+      border: 1px solid #aed2c0;
+      border-radius: 8px;
+      background: var(--green-soft);
+      color: var(--green-dark);
+      font-weight: 800;
+    }
+    .brand-name { font-weight: 780; }
+    .brand-caption { color: var(--muted); font-size: 10px; margin-top: 1px; }
+    .side-label {
+      color: #929e99;
+      font-size: 9px;
+      font-weight: 780;
+      letter-spacing: .8px;
+      margin: 5px 9px 7px;
+      text-transform: uppercase;
+    }
+    .side-nav { display: grid; gap: 3px; }
+    .side-nav button {
+      display: grid;
+      grid-template-columns: 19px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 9px;
+      width: 100%;
+      min-height: 37px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: #5d6b66;
+      padding: 8px 9px;
+      text-align: left;
+    }
+    .side-nav button:hover { background: #edf2ef; color: var(--ink); }
+    .side-nav button.active { background: var(--green-soft); color: var(--green-dark); font-weight: 700; }
+    .side-nav .count { color: var(--muted); font-size: 10px; font-weight: 500; }
+    .side-section { margin-top: 20px; }
+    .legend {
+      display: grid;
+      grid-template-columns: 9px minmax(0, 1fr);
+      align-items: center;
+      gap: 8px;
+      color: #66736f;
+      font-size: 11px;
+      padding: 6px 10px;
+    }
+    .dot { width: 7px; height: 7px; border-radius: 50%; }
+    .dot.green { background: var(--green); }
+    .dot.amber { background: #d29a38; }
+    .dot.blue { background: var(--blue); }
+    .privacy {
+      display: grid;
+      grid-template-columns: 10px minmax(0, 1fr);
+      gap: 8px;
+      margin-top: auto;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 10px;
+      padding: 14px 8px 0;
+    }
+    .privacy .pulse {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 0 3px var(--green-soft);
+      margin-top: 4px;
+    }
+    .privacy strong { display: block; color: #3f4d48; font-size: 11px; }
+
+    .workspace {
+      display: grid;
+      grid-template-rows: 62px minmax(0, 1fr) 62px;
+      min-width: 0;
+      min-height: 0;
+    }
+    .topbar {
+      display: grid;
+      grid-template-columns: minmax(230px, 1fr) auto;
+      align-items: center;
+      gap: 14px;
+      border-bottom: 1px solid var(--line);
+      background: #fafcfb;
+      padding: 0 16px;
+    }
+    .pathbar { display: flex; align-items: center; min-width: 0; gap: 6px; }
+    .icon-button {
+      display: inline-grid;
+      place-items: center;
+      width: 31px;
+      height: 31px;
+      flex: 0 0 auto;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      background: transparent;
+      color: #596762;
+      font-size: 15px;
+    }
+    .icon-button:hover { border-color: var(--line); background: var(--surface); color: var(--ink); }
+    .scope-path {
+      min-width: 0;
+      overflow: hidden;
+      color: #4b5954;
+      font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .top-actions { display: flex; align-items: center; gap: 7px; }
+    .search { position: relative; width: min(235px, 24vw); }
+    .search input {
+      width: 100%;
+      height: 33px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      outline: none;
+      background: var(--surface);
+      color: var(--ink);
+      padding: 0 30px 0 31px;
+    }
+    .search input:focus { border-color: #82b89f; box-shadow: 0 0 0 3px var(--green-soft); }
+    .search .glyph { position: absolute; left: 10px; top: 6px; color: #82908b; }
+    .search kbd { position: absolute; right: 8px; top: 7px; color: #98a39f; font: 10px/1.5 inherit; }
+    .agent-button, .scan-button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      height: 33px;
+      border-radius: 6px;
+      padding: 0 10px;
+      white-space: nowrap;
+    }
+    .agent-button { max-width: 190px; border: 1px solid var(--line); background: var(--surface); color: #44524d; }
+    .agent-button span:last-child { overflow: hidden; text-overflow: ellipsis; }
+    .agent-button:hover { border-color: var(--line-strong); background: var(--soft); }
+    .scan-button { border: 1px solid var(--green); background: var(--green); color: #fff; font-weight: 700; }
+    .scan-button:hover { border-color: var(--green-dark); background: var(--green-dark); }
+
+    .content {
+      display: grid;
+      grid-template-columns: minmax(430px, 1fr) minmax(330px, 410px);
+      min-width: 0;
+      min-height: 0;
+      gap: 12px;
+      padding: 12px;
+    }
+    .panel {
+      min-width: 0;
+      min-height: 0;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+      overflow: hidden;
+    }
+    .browser-panel { display: grid; grid-template-rows: auto auto minmax(0, 1fr); }
+    .panel-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      min-height: 49px;
+      gap: 12px;
+      border-bottom: 1px solid var(--line);
+      padding: 8px 13px;
+    }
+    .panel-title { min-width: 0; }
+    .panel-title strong { display: block; overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+    .panel-title span { display: block; color: var(--muted); font-size: 10px; margin-top: 1px; }
+    .view-controls { display: flex; gap: 3px; }
+    .view-controls button {
+      width: 29px;
+      height: 29px;
+      border: 1px solid transparent;
+      border-radius: 5px;
+      background: transparent;
+      color: var(--muted);
+    }
+    .view-controls button:hover { border-color: var(--line); color: var(--ink); }
+    .view-controls button.active { border-color: #bdd7ca; background: var(--green-soft); color: var(--green-dark); }
+    .summary-strip {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      border-bottom: 1px solid var(--line);
+      background: #fbfcfb;
+    }
+    .summary {
+      min-width: 0;
+      border-right: 1px solid var(--line);
+      padding: 9px 12px;
+    }
+    .summary:last-child { border-right: 0; }
+    .summary span { display: block; color: var(--muted); font-size: 9px; font-weight: 700; text-transform: uppercase; }
+    .summary strong { display: block; overflow: hidden; font-size: 13px; margin-top: 2px; text-overflow: ellipsis; white-space: nowrap; }
+    .tree-wrap { min-height: 0; overflow: auto; }
+    .tree-head, .tree-row {
+      display: grid;
+      grid-template-columns: minmax(230px, 1fr) 96px 84px 102px;
+      align-items: center;
+      min-width: 610px;
+    }
+    .tree-head {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      min-height: 33px;
+      border-bottom: 1px solid var(--line);
+      background: #fafcfb;
+      color: #899590;
+      font-size: 9px;
+      font-weight: 750;
+      letter-spacing: .5px;
+      padding: 0 11px;
+      text-transform: uppercase;
+    }
+    .tree-head div:nth-child(n+2) { text-align: right; }
+    .tree { min-width: 610px; padding: 3px 0 11px; }
+    .tree-row {
+      min-height: 39px;
+      border-left: 2px solid transparent;
+      color: #43504c;
+      padding: 0 11px 0 calc(11px + var(--depth) * 17px);
+      user-select: none;
+    }
+    .tree-row:hover { background: #f5f8f6; }
+    .tree-row.selected { border-left-color: var(--green); background: var(--green-soft); color: var(--ink); }
+    .tree-row.staged .name strong::after { color: var(--amber); content: "  ●"; font-size: 8px; }
+    .name { display: flex; align-items: center; min-width: 0; gap: 7px; }
+    .toggle {
+      display: inline-grid;
+      place-items: center;
+      width: 13px;
+      flex: 0 0 auto;
+      color: #73817c;
+      font-size: 9px;
+    }
+    .file-icon {
+      display: inline-grid;
+      place-items: center;
+      width: 18px;
+      height: 18px;
+      flex: 0 0 auto;
+      border-radius: 4px;
+      background: #edf2ef;
+      color: #60706a;
+      font-size: 10px;
+    }
+    .file-icon.folder { background: var(--blue-soft); color: var(--blue); }
+    .file-icon.rebuildable { background: var(--amber-soft); color: var(--amber); }
+    .name strong { overflow: hidden; font-size: 11px; font-weight: 640; text-overflow: ellipsis; white-space: nowrap; }
+    .bar-cell { display: flex; align-items: center; justify-content: flex-end; gap: 7px; }
+    .bar-track { width: 48px; height: 5px; border-radius: 5px; background: #e8eeeb; overflow: hidden; }
+    .bar-track i { display: block; height: 100%; border-radius: inherit; background: #5d927b; }
+    .size, .date { color: var(--muted); font-size: 10px; padding-left: 8px; text-align: right; white-space: nowrap; }
+    .empty { color: var(--muted); padding: 32px 18px; text-align: center; }
+
+    .inspector { display: grid; grid-template-rows: auto auto minmax(0, 1fr); }
+    .inspect-head {
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      gap: 10px;
+      border-bottom: 1px solid var(--line);
+      padding: 13px 15px;
+    }
+    .inspect-name { min-width: 0; }
+    .eyebrow { color: var(--muted); font-size: 9px; font-weight: 750; letter-spacing: .6px; text-transform: uppercase; }
+    .inspect-name h1 { overflow: hidden; font-size: 18px; letter-spacing: -.2px; margin: 3px 0 2px; text-overflow: ellipsis; white-space: nowrap; }
+    .inspect-path { color: var(--muted); font: 9px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+    .risk {
+      display: inline-flex;
+      align-items: center;
+      min-height: 21px;
+      border-radius: 999px;
+      font-size: 9px;
+      font-weight: 780;
+      padding: 0 8px;
+      white-space: nowrap;
+    }
+    .risk.rebuildable { background: var(--green-soft); color: var(--green-dark); }
+    .risk.review { background: var(--amber-soft); color: var(--amber); }
+    .risk.protected { background: var(--blue-soft); color: var(--blue); }
+    .tabs {
+      display: flex;
+      min-width: 0;
+      border-bottom: 1px solid var(--line);
+      padding: 0 10px;
+      overflow-x: auto;
+    }
+    .tabs button {
+      position: relative;
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      font-size: 10px;
+      padding: 10px 9px 9px;
+      white-space: nowrap;
+    }
+    .tabs button:hover { color: var(--ink); }
+    .tabs button.active { color: var(--green-dark); font-weight: 750; }
+    .tabs button.active::after {
+      position: absolute;
+      right: 8px;
+      bottom: -1px;
+      left: 8px;
+      height: 2px;
+      background: var(--green);
+      content: "";
+    }
+    .inspect-body { min-height: 0; overflow: auto; padding: 14px 15px 18px; }
+    .meta-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+    .meta { min-width: 0; border: 1px solid var(--line); border-radius: 6px; background: var(--soft); padding: 7px 8px; }
+    .meta span { display: block; color: var(--muted); font-size: 8px; font-weight: 700; text-transform: uppercase; }
+    .meta strong { display: block; overflow: hidden; font-size: 10px; margin-top: 3px; text-overflow: ellipsis; white-space: nowrap; }
+    .section { border-top: 1px solid var(--line); margin-top: 14px; padding-top: 13px; }
+    .section:first-child { border-top: 0; margin-top: 0; padding-top: 0; }
+    .section-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+    .section-title h2 { font-size: 11px; margin: 0; }
+    .section-title span { color: var(--muted); font-size: 9px; }
+    .preview {
+      max-height: 180px;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #f7f9f8;
+      color: #45524e;
+      font: 10px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+      padding: 9px;
+      white-space: pre-wrap;
+    }
+    .evidence { display: grid; gap: 7px; }
+    .evidence-row { display: grid; grid-template-columns: 15px minmax(0, 1fr); gap: 6px; color: #4f5e59; font-size: 10px; }
+    .check { color: var(--green); font-weight: 800; }
+    .impact { border: 1px solid #e9dcb7; border-radius: 6px; background: #fffbf0; color: #70592b; font-size: 10px; padding: 9px 10px; }
+    .impact strong { display: block; color: #5c4924; margin-bottom: 3px; }
+    .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 11px; }
+    .primary, .secondary, .danger {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      min-height: 33px;
+      border-radius: 6px;
+      font-size: 10px;
+      font-weight: 720;
+      padding: 0 9px;
+    }
+    .primary { border: 1px solid var(--green); background: var(--green); color: #fff; }
+    .primary:hover { border-color: var(--green-dark); background: var(--green-dark); }
+    .secondary { border: 1px solid var(--line); background: var(--surface); color: #40504a; }
+    .secondary:hover { border-color: var(--line-strong); background: var(--soft); }
+    .danger { border: 1px solid var(--red); background: var(--red); color: #fff; }
+
+    .agent-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      border: 1px solid var(--line);
+      border-radius: 6px 6px 0 0;
+      background: #f8faf9;
+      padding: 8px 9px;
+    }
+    .agent-id { display: flex; align-items: center; gap: 7px; }
+    .avatar { display: grid; place-items: center; width: 23px; height: 23px; border-radius: 5px; background: var(--violet-soft); color: var(--violet); font-size: 9px; font-weight: 800; }
+    .agent-id strong { display: block; font-size: 10px; }
+    .agent-id span { display: block; color: var(--muted); font-size: 8px; }
+    .conversation {
+      display: grid;
+      align-content: start;
+      gap: 9px;
+      min-height: 160px;
+      max-height: 350px;
+      overflow: auto;
+      border-right: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      border-left: 1px solid var(--line);
+      padding: 9px;
+    }
+    .message { max-width: 94%; border-radius: 6px; color: #485650; font-size: 10px; padding: 8px 9px; white-space: normal; }
+    .message.user { justify-self: end; background: var(--green-soft); color: #285642; }
+    .message.agent { justify-self: start; border: 1px solid var(--line); background: #f8faf9; }
+    .message .source { display: block; color: var(--muted); font-size: 8px; margin-top: 5px; }
+    .thinking { display: inline-flex; align-items: center; gap: 3px; color: var(--violet); }
+    .thinking i { width: 4px; height: 4px; border-radius: 50%; background: currentColor; animation: blink 1.1s infinite ease-in-out; }
+    .thinking i:nth-child(2) { animation-delay: 140ms; }
+    .thinking i:nth-child(3) { animation-delay: 280ms; }
+    @keyframes blink { 0%, 80%, 100% { opacity: .25; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-2px); } }
+    .ask-form { display: grid; grid-template-columns: minmax(0, 1fr) 31px; gap: 6px; margin-top: 7px; }
+    .ask-form input { min-width: 0; height: 33px; border: 1px solid var(--line); border-radius: 6px; outline: none; padding: 0 9px; }
+    .ask-form input:focus { border-color: #82b89f; box-shadow: 0 0 0 3px var(--green-soft); }
+    .send { display: grid; place-items: center; width: 31px; height: 33px; border: 1px solid var(--green); border-radius: 6px; background: var(--green); color: #fff; font-weight: 800; }
+    .offline { border: 1px solid var(--line); border-radius: 6px; background: var(--soft); color: var(--muted); font-size: 10px; padding: 11px; }
+    .relation { border: 1px solid var(--line); border-radius: 6px; margin-bottom: 7px; padding: 9px 10px; }
+    .relation strong { display: block; font-size: 10px; }
+    .relation span { display: block; color: var(--muted); font-size: 9px; margin-top: 2px; }
+
+    .basket {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 13px;
+      border-top: 1px solid var(--line);
+      background: #f9fbfa;
+      padding: 8px 16px;
+    }
+    .basket-summary { display: flex; align-items: center; min-width: 0; gap: 10px; }
+    .basket-icon { display: grid; place-items: center; width: 33px; height: 33px; flex: 0 0 auto; border-radius: 7px; background: var(--green-soft); color: var(--green-dark); font-size: 16px; }
+    .basket-summary strong { display: block; font-size: 11px; }
+    .basket-summary span { display: block; overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+    .basket-actions { display: flex; gap: 7px; }
+
+    .toast {
+      position: fixed;
+      right: 18px;
+      bottom: 76px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      max-width: min(430px, calc(100vw - 36px));
+      border: 1px solid #bad5c6;
+      border-radius: 7px;
+      background: #f3faf6;
+      box-shadow: var(--shadow);
+      color: #28553f;
+      opacity: 0;
+      padding: 10px 12px;
+      pointer-events: none;
+      transform: translateY(8px);
+      transition: opacity 160ms ease, transform 160ms ease;
+      z-index: 30;
+    }
+    .toast.error { border-color: #e1baba; background: #fff5f5; color: var(--red); }
+    .toast.visible { opacity: 1; pointer-events: auto; transform: translateY(0); }
+    .toast button { border: 0; background: transparent; color: inherit; font-weight: 780; padding: 0; }
+
+    .backdrop {
+      position: fixed;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      background: rgba(20, 30, 27, .3);
+      padding: 17px;
+      z-index: 40;
+    }
+    .modal {
+      width: min(480px, 100%);
+      max-height: calc(100vh - 34px);
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+      box-shadow: var(--shadow);
+      padding: 17px;
+    }
+    .modal h2 { font-size: 15px; margin: 0; }
+    .modal > p { color: var(--muted); font-size: 10px; margin: 5px 0 14px; }
+    .field { display: grid; gap: 5px; margin-top: 9px; }
+    .field label { color: #53615c; font-size: 10px; font-weight: 700; }
+    .field input, .field select { width: 100%; height: 35px; border: 1px solid var(--line); border-radius: 6px; outline: none; padding: 0 9px; }
+    .field input:focus, .field select:focus { border-color: #82b89f; box-shadow: 0 0 0 3px var(--green-soft); }
+    .path-list { display: grid; gap: 5px; max-height: 180px; overflow: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--soft); padding: 8px; }
+    .path-list code { overflow-wrap: anywhere; color: #4f5c58; font: 9px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .modal-note { border: 1px solid #e9dcb7; border-radius: 6px; background: #fffbf0; color: #70592b; font-size: 10px; margin-top: 10px; padding: 9px; }
+    .modal-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 14px; }
+    .stopped { position: fixed; inset: 0; display: grid; place-items: center; background: var(--bg); z-index: 50; text-align: center; }
+    .stopped h1 { font-size: 22px; margin: 0 0 5px; }
+    .stopped p { color: var(--muted); margin: 0; }
+
+    @media (max-width: 1050px) {
+      .app { grid-template-columns: 178px minmax(0, 1fr); }
+      .content { grid-template-columns: minmax(380px, 1fr) minmax(300px, 350px); }
+      .agent-button span:last-child { max-width: 90px; }
+    }
+    @media (max-width: 800px) {
+      body { overflow: auto; }
+      .app { display: block; height: auto; }
+      .sidebar { border-right: 0; border-bottom: 1px solid var(--line); padding: 10px 12px; }
+      .brand { padding: 0 4px 8px; }
+      .side-label, .side-section, .privacy { display: none; }
+      .side-nav { display: flex; overflow-x: auto; }
+      .side-nav button { width: auto; flex: 0 0 auto; }
+      .side-nav .count { display: none; }
+      .workspace { grid-template-rows: auto auto auto; min-height: 0; }
+      .topbar { grid-template-columns: 1fr; padding: 9px 11px; }
+      .top-actions { min-width: 0; }
+      .search { width: 100%; flex: 1; }
+      .agent-button { max-width: 136px; }
+      .content { grid-template-columns: 1fr; padding: 9px; }
+      .browser-panel { min-height: 520px; }
+      .inspector { min-height: 560px; }
+      .basket { position: sticky; bottom: 0; z-index: 20; }
+    }
+    @media (max-width: 520px) {
+      .agent-button span:last-child { display: none; }
+      .scope-path { max-width: calc(100vw - 80px); }
+      .tree-head, .tree-row { grid-template-columns: minmax(0, 1fr) 76px; min-width: 0; }
+      .tree { min-width: 0; }
+      .tree-head div:nth-child(2), .tree-head div:nth-child(4), .bar-cell, .date { display: none; }
+      .meta-grid { grid-template-columns: 1fr 1fr; }
+      .basket { grid-template-columns: 1fr; }
+      .basket-actions button { flex: 1; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">cy</div>
+        <div><div class="brand-name">clean your data</div><div class="brand-caption">agentic file explorer</div></div>
+      </div>
+      <div class="side-label">Workspace</div>
+      <nav class="side-nav">
+        <button class="active" type="button" data-view="files"><span>▣</span><span>Files</span><span class="count" id="fileCount">0</span></button>
+        <button type="button" data-view="rebuildable"><span>↻</span><span>Rebuildable</span><span class="count" id="rebuildableCount">0</span></button>
+        <button type="button" data-view="basket"><span>⌫</span><span>Cleanup basket</span><span class="count" id="basketCount">0</span></button>
+        <button type="button" data-view="history"><span>◷</span><span>History</span></button>
+      </nav>
+      <section class="side-section">
+        <div class="side-label">Evidence</div>
+        <div class="legend"><span class="dot green"></span><span>Rebuildable candidate</span></div>
+        <div class="legend"><span class="dot amber"></span><span>Needs your review</span></div>
+        <div class="legend"><span class="dot blue"></span><span>Protected or owner-managed</span></div>
+      </section>
+      <div class="privacy">
+        <span class="pulse"></span>
+        <div><strong>Local session</strong>Paths are redacted. Preview stays local. Cleanup requires exact confirmation.</div>
+      </div>
+    </aside>
+
+    <main class="workspace">
+      <header class="topbar">
+        <div class="pathbar">
+          <button class="icon-button" id="backButton" type="button" title="Back" aria-label="Back">‹</button>
+          <button class="icon-button" id="forwardButton" type="button" title="Forward" aria-label="Forward">›</button>
+          <div class="scope-path" id="scopePath">Loading local scope…</div>
+        </div>
+        <div class="top-actions">
+          <label class="search">
+            <span class="glyph">⌕</span>
+            <input id="searchInput" type="search" placeholder="Search names, paths, areas">
+            <kbd>/</kbd>
+          </label>
+          <button class="agent-button" id="agentButton" type="button" title="Configure AI"><span>✦</span><span id="agentLabel">AI</span></button>
+          <button class="scan-button" id="scanButton" type="button"><span>↻</span><span>Rescan</span></button>
+          <button class="icon-button" id="quitButton" type="button" title="Stop local GUI server" aria-label="Stop server">■</button>
+        </div>
+      </header>
+
+      <section class="content">
+        <section class="panel browser-panel">
+          <header class="panel-head">
+            <div class="panel-title"><strong id="scopeName">Loading…</strong><span id="scopeMeta">Preparing metadata map</span></div>
+            <div class="view-controls">
+              <button class="active" type="button" title="Tree view">☷</button>
+              <button id="sortButton" type="button" title="Sort by size">↕</button>
+              <button id="helpButton" type="button" title="Keyboard shortcuts">?</button>
+            </div>
+          </header>
+          <div class="summary-strip">
+            <div class="summary"><span>Measured</span><strong id="totalSize">—</strong></div>
+            <div class="summary"><span>Loaded map</span><strong id="loadedCount">—</strong></div>
+            <div class="summary"><span>Cleanup basket</span><strong id="stagedSize">0 B</strong></div>
+          </div>
+          <div class="tree-wrap" id="treeWrap">
+            <div class="tree-head"><div>Name</div><div>Relative space</div><div>Size</div><div>Modified</div></div>
+            <div class="tree" id="tree"><div class="empty">Scanning the selected path…</div></div>
+          </div>
+        </section>
+
+        <aside class="panel inspector">
+          <header class="inspect-head">
+            <div class="inspect-name"><div class="eyebrow" id="nodeKind">Selected path</div><h1 id="nodeName">Loading…</h1><div class="inspect-path" id="nodePath"></div></div>
+            <span class="risk review" id="riskPill">REVIEW</span>
+          </header>
+          <nav class="tabs">
+            <button class="active" type="button" data-tab="inspect">Inspect</button>
+            <button type="button" data-tab="agent">Ask Agent <span id="chatCount"></span></button>
+            <button type="button" data-tab="relations">Relations</button>
+          </nav>
+          <div class="inspect-body" id="inspectBody"><div class="empty">Select a path to inspect it.</div></div>
+        </aside>
+      </section>
+
+      <footer class="basket">
+        <div class="basket-summary">
+          <div class="basket-icon">⌫</div>
+          <div><strong id="basketTitle">Cleanup basket is empty</strong><span id="basketDetail">Inspect an exact path before staging it.</span></div>
+        </div>
+        <div class="basket-actions">
+          <button class="secondary" id="reviewButton" type="button" disabled>Review impact</button>
+          <button class="danger" id="trashButton" type="button" disabled>Move to Trash</button>
+        </div>
+      </footer>
+    </main>
+  </div>
+
+  <div class="toast" id="toast" role="status"><span id="toastText"></span><button id="toastAction" type="button" hidden>Undo</button></div>
+
+  <div class="backdrop" id="configModal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="configTitle">
+      <h2 id="configTitle">Configure AI</h2>
+      <p>The explorer works without AI. Clean Your Data writes a metadata-only prompt to stdin and reads the answer from stdout. No shell is used. Custom-command arguments are saved verbatim, so never put credentials in them. A custom command still has its own operating-system permissions; configure only one you trust.</p>
+      <div class="field">
+        <label for="modeInput">Mode</label>
+        <select id="modeInput">
+          <option value="auto">Auto-detect Codex</option>
+          <option value="codex">Codex CLI</option>
+          <option value="command">Custom command</option>
+          <option value="off">No AI</option>
+          <option value="environment">Environment override</option>
+        </select>
+      </div>
+      <div class="field" id="commandField">
+        <label for="commandInput">Command</label>
+        <input id="commandInput" placeholder="ollama run qwen3:8b" spellcheck="false">
+      </div>
+      <div class="modal-note">For hosted providers, put the API key in that tool's environment or credential store. Do not paste a secret into this command.</div>
+      <div class="modal-note" id="environmentNote" hidden>This session is controlled by CLEAN_YOUR_DATA_AI_COMMAND. Restart without that environment variable to edit the saved provider here.</div>
+      <div class="modal-actions">
+        <button class="secondary" data-close="configModal" type="button">Cancel</button>
+        <button class="primary" id="saveConfigButton" type="button">Save locally</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="backdrop" id="trashModal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="trashTitle">
+      <h2 id="trashTitle">Move exact paths to system Trash?</h2>
+      <p>Nothing is permanently deleted. Review every path below; the local server re-checks eligibility immediately before moving it.</p>
+      <div class="path-list" id="trashPaths"></div>
+      <div class="modal-note">This is the second confirmation. After the move, use Undo while the Trash item still exists and its original location is free.</div>
+      <div class="modal-actions">
+        <button class="secondary" data-close="trashModal" type="button">Cancel</button>
+        <button class="danger" id="confirmTrashButton" type="button">Move these exact paths</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="backdrop" id="helpModal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="helpTitle">
+      <h2 id="helpTitle">Keyboard</h2>
+      <p>Mouse and keyboard operate the same selection and state as the terminal explorer.</p>
+      <div class="path-list">
+        <code>j / k or ↑ / ↓ — move selection</code>
+        <code>Enter — open or close folder</code>
+        <code>A — ask the configured Agent</code>
+        <code>dd — add or remove exact path from cleanup basket</code>
+        <code>u — undo the latest Trash move</code>
+        <code>gg / G — first or last visible row</code>
+        <code>/ — search</code>
+        <code>Esc — close dialogs or leave input</code>
+      </div>
+      <div class="modal-actions"><button class="primary" data-close="helpModal" type="button">Done</button></div>
+    </div>
+  </div>
+
+  <div class="stopped" id="stopped" hidden><div><h1>Local GUI stopped</h1><p>You can close this tab. Run <code>cyd gui</code> to start another session.</p></div></div>
+
+  <script>
+    const TOKEN = "__CYD_SESSION_TOKEN__";
+    const state = {
+      nodes: [],
+      byId: new Map(),
+      selectedId: null,
+      expanded: new Set(),
+      staged: new Set(),
+      tab: "inspect",
+      query: "",
+      view: "files",
+      sortBySize: false,
+      history: [],
+      historyIndex: -1,
+      ai: { mode: "auto", provider: "AI" },
+      inspect: new Map(),
+      preview: new Map(),
+      relations: new Map(),
+      chats: new Map(),
+      pending: new Set(),
+      lastUndoAvailable: false,
+      vimPrefix: "",
+      vimTimer: null
+    };
+
+    const $ = id => document.getElementById(id);
+
+    async function api(path, options = {}) {
+      const response = await fetch(path, {
+        ...options,
+        headers: {
+          "X-CYD-Token": TOKEN,
+          ...(options.body ? { "Content-Type": "application/json" } : {}),
+          ...(options.headers || {})
+        }
+      });
+      const payload = await response.json().catch(() => ({ error: "Invalid local server response." }));
+      if (!response.ok) throw new Error(payload.error || "Local request failed.");
+      return payload;
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "").replace(/[&<>"']/g, char => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;"
+      })[char]);
+    }
+
+    function lines(value) {
+      return escapeHtml(value).replace(/\n/g, "<br>");
+    }
+
+    function bytes(value) {
+      let amount = Math.max(0, Number(value) || 0);
+      const units = ["B", "KB", "MB", "GB", "TB"];
+      let index = 0;
+      while (amount >= 1024 && index < units.length - 1) { amount /= 1024; index += 1; }
+      const precision = index === 0 ? 0 : amount >= 10 ? 1 : 2;
+      return amount.toFixed(precision).replace(/\.0+$/, "") + " " + units[index];
+    }
+
+    function riskLabel(risk) {
+      return { rebuildable: "REBUILDABLE", review: "REVIEW", protected: "PROTECTED" }[risk] || "REVIEW";
+    }
+
+    function nodeIcon(node) {
+      if (node.kind === "folder") return node.risk === "rebuildable" ? ["▰", "folder rebuildable"] : ["▰", "folder"];
+      return ["·", node.risk === "rebuildable" ? "rebuildable" : ""];
+    }
+
+    function mergeNodes(nodes) {
+      nodes.forEach(node => state.byId.set(node.node_id, { ...(state.byId.get(node.node_id) || {}), ...node }));
+      state.nodes = Array.from(state.byId.values());
+    }
+
+    function applySession(payload, preserveSelection = true) {
+      const previous = preserveSelection ? state.selectedId : null;
+      state.nodes = [];
+      state.byId = new Map();
+      mergeNodes(payload.nodes || []);
+      state.staged = new Set(payload.staged || []);
+      state.ai = payload.ai || state.ai;
+      const root = payload.scope;
+      state.selectedId = previous && state.byId.has(previous) ? previous : root.node_id;
+      state.expanded = new Set(
+        state.nodes
+          .filter(node => node.kind === "folder" && Number(node.depth) < 2 && state.nodes.some(child => child.parent_id === node.node_id))
+          .map(node => node.node_id)
+      );
+      if (!state.history.length) {
+        state.history = [state.selectedId];
+        state.historyIndex = 0;
+      }
+      $("scopePath").textContent = root.path;
+      $("scopeName").textContent = root.name + (root.kind === "folder" && !root.name.endsWith("/") ? "/" : "");
+      $("scopeMeta").textContent = payload.status + " · metadata only · deeper folders load on demand";
+      $("totalSize").textContent = root.human_size || bytes(root.allocated_bytes);
+      renderAll();
+      selectNode(state.selectedId, false);
+    }
+
+    function childrenOf(parentId) {
+      let children = state.nodes.filter(node => node.parent_id === parentId);
+      if (state.sortBySize) children.sort((a, b) => Number(b.allocated_bytes || 0) - Number(a.allocated_bytes || 0));
+      return children;
+    }
+
+    function matchesView(node) {
+      if (state.view === "rebuildable" && node.risk !== "rebuildable") return false;
+      if (state.view === "basket" && !state.staged.has(node.node_id)) return false;
+      const haystack = [node.name, node.path, node.area, node.category, node.kind].join(" ").toLowerCase();
+      return !state.query || state.query.toLowerCase().split(/\s+/).every(term => haystack.includes(term));
+    }
+
+    function visibleNodes() {
+      const output = [];
+      const activeFilter = Boolean(state.query) || state.view !== "files";
+      const included = new Set();
+      if (activeFilter) {
+        state.nodes.filter(matchesView).forEach(node => {
+          let current = node;
+          while (current) {
+            included.add(current.node_id);
+            current = state.byId.get(current.parent_id);
+          }
+        });
+      }
+      function visit(parentId) {
+        childrenOf(parentId).forEach(node => {
+          if (activeFilter && !included.has(node.node_id)) return;
+          output.push(node);
+          const hasIncludedChild = childrenOf(node.node_id).some(child => included.has(child.node_id));
+          if (node.kind === "folder" && (state.expanded.has(node.node_id) || (activeFilter && hasIncludedChild))) visit(node.node_id);
+        });
+      }
+      visit(null);
+      return output;
+    }
+
+    function renderTree() {
+      const visible = visibleNodes();
+      const siblingMax = new Map();
+      state.nodes.forEach(node => {
+        siblingMax.set(node.parent_id, Math.max(siblingMax.get(node.parent_id) || 0, Number(node.allocated_bytes || 0)));
+      });
+      $("tree").innerHTML = visible.length ? visible.map(node => {
+        const icon = nodeIcon(node);
+        const hasLoadedChildren = state.nodes.some(child => child.parent_id === node.node_id);
+        const toggle = node.kind === "folder" && node.can_expand ? (state.expanded.has(node.node_id) ? "▼" : "▶") : "";
+        const max = siblingMax.get(node.parent_id) || 0;
+        const width = max ? Math.max(3, Math.round(100 * Number(node.allocated_bytes || 0) / max)) : 0;
+        return '<div class="tree-row ' + (node.node_id === state.selectedId ? "selected " : "") + (state.staged.has(node.node_id) ? "staged" : "") + '" data-id="' + escapeHtml(node.node_id) + '" style="--depth:' + Number(node.depth || 0) + '">' +
+          '<div class="name"><span class="toggle">' + toggle + '</span><span class="file-icon ' + icon[1] + '">' + icon[0] + '</span><strong>' + escapeHtml(node.name) + (node.kind === "folder" && !node.name.endsWith("/") ? "/" : "") + '</strong></div>' +
+          '<div class="bar-cell"><span class="bar-track"><i style="width:' + width + '%"></i></span></div>' +
+          '<div class="size">' + escapeHtml(node.human_size || bytes(node.allocated_bytes)) + '</div>' +
+          '<div class="date">' + escapeHtml(shortDate(node.modified_at)) + '</div></div>';
+      }).join("") : '<div class="empty">No loaded paths match this view.</div>';
+      $("loadedCount").textContent = state.nodes.length + " paths";
+      $("fileCount").textContent = state.nodes.length;
+      $("rebuildableCount").textContent = state.nodes.filter(node => node.risk === "rebuildable").length;
+
+      $("tree").querySelectorAll(".tree-row").forEach(row => {
+        row.addEventListener("click", event => {
+          const node = state.byId.get(row.dataset.id);
+          if (event.target.classList.contains("toggle")) toggleFolder(node);
+          else selectNode(node.node_id, true);
+        });
+        row.addEventListener("dblclick", () => toggleFolder(state.byId.get(row.dataset.id)));
+      });
+    }
+
+    function shortDate(value) {
+      if (!value) return "—";
+      return String(value).replace("T", " ").slice(0, 16);
+    }
+
+    async function toggleFolder(node) {
+      if (!node || node.kind !== "folder" || !node.can_expand) return;
+      if (state.expanded.has(node.node_id)) {
+        state.expanded.delete(node.node_id);
+        renderTree();
+        return;
+      }
+      if (!state.nodes.some(child => child.parent_id === node.node_id)) {
+        showToast("Loading the next level…");
+        try {
+          const payload = await api("/api/expand", { method: "POST", body: JSON.stringify({ node_id: node.node_id }) });
+          mergeNodes(payload.nodes || []);
+        } catch (error) {
+          showToast(error.message, false, true);
+          return;
+        }
+      }
+      state.expanded.add(node.node_id);
+      renderTree();
+    }
+
+    function selectNode(nodeId, recordHistory = true) {
+      if (!state.byId.has(nodeId)) return;
+      state.selectedId = nodeId;
+      if (recordHistory && state.history[state.historyIndex] !== nodeId) {
+        state.history = state.history.slice(0, state.historyIndex + 1);
+        state.history.push(nodeId);
+        state.historyIndex = state.history.length - 1;
+      }
+      renderTree();
+      renderInspectorHeader();
+      renderInspector();
+      loadSelection(nodeId);
+      $("backButton").disabled = state.historyIndex <= 0;
+      $("forwardButton").disabled = state.historyIndex >= state.history.length - 1;
+    }
+
+    async function loadSelection(nodeId) {
+      if (!state.inspect.has(nodeId) || !state.preview.has(nodeId)) {
+        try {
+          const [inspect, preview] = await Promise.all([
+            api("/api/inspect?node_id=" + encodeURIComponent(nodeId)),
+            api("/api/preview?node_id=" + encodeURIComponent(nodeId))
+          ]);
+          state.inspect.set(nodeId, inspect);
+          state.preview.set(nodeId, preview);
+          mergeNodes([inspect.node]);
+          if (state.selectedId === nodeId) {
+            renderInspectorHeader();
+            renderInspector();
+            renderTree();
+          }
+        } catch (error) {
+          showToast(error.message, false, true);
+        }
+      }
+    }
+
+    function renderInspectorHeader() {
+      const node = state.byId.get(state.selectedId);
+      if (!node) return;
+      $("nodeKind").textContent = node.area || node.kind;
+      $("nodeName").textContent = node.name + (node.kind === "folder" && !node.name.endsWith("/") ? "/" : "");
+      $("nodePath").textContent = node.path + (node.kind === "folder" && !node.path.endsWith("/") ? "/" : "");
+      $("riskPill").className = "risk " + node.risk;
+      $("riskPill").textContent = riskLabel(node.risk);
+      const chat = state.chats.get(node.node_id) || [];
+      $("chatCount").textContent = chat.length ? "· " + chat.length : "";
+    }
+
+    function renderInspector() {
+      document.querySelectorAll(".tabs button").forEach(button => button.classList.toggle("active", button.dataset.tab === state.tab));
+      const node = state.byId.get(state.selectedId);
+      if (!node) return;
+      if (state.tab === "agent") renderAgent(node);
+      else if (state.tab === "relations") renderRelations(node);
+      else renderInspect(node);
+    }
+
+    function renderInspect(node) {
+      const inspect = state.inspect.get(node.node_id);
+      const preview = state.preview.get(node.node_id);
+      if (!inspect || !preview) {
+        $("inspectBody").innerHTML = '<div class="empty">Reading local metadata…</div>';
+        return;
+      }
+      const eligible = inspect.cleanup.eligible;
+      $("inspectBody").innerHTML =
+        '<section class="section"><div class="meta-grid">' +
+          '<div class="meta"><span>Size</span><strong>' + escapeHtml(node.human_size || bytes(node.allocated_bytes)) + '</strong></div>' +
+          '<div class="meta"><span>Modified</span><strong>' + escapeHtml(shortDate(node.modified_at)) + '</strong></div>' +
+          '<div class="meta"><span>Contains</span><strong>' + Number(node.child_count || 0) + ' entries</strong></div>' +
+        '</div></section>' +
+        '<section class="section"><div class="section-title"><h2>Preview</h2><span>local · limited</span></div><pre class="preview">' + escapeHtml(preview.lines.join("\n")) + '</pre></section>' +
+        '<section class="section"><div class="section-title"><h2>What we know</h2><span>preliminary evidence</span></div><div class="evidence">' +
+          '<div class="evidence-row"><span class="check">✓</span><span>' + escapeHtml(inspect.advice) + '</span></div>' +
+          '<div class="evidence-row"><span class="check">✓</span><span>Measurement: ' + escapeHtml(node.measurement_status) + ' · category: ' + escapeHtml(node.category) + '</span></div>' +
+          '<div class="evidence-row"><span class="check">' + (eligible ? "✓" : "×") + '</span><span>' + escapeHtml(inspect.cleanup.reason) + '</span></div>' +
+        '</div></section>' +
+        '<section class="section"><div class="impact"><strong>Safety boundary</strong>The preview stays in this browser session and is never included in the Agent prompt. An Agent can advise, but cannot approve or execute cleanup.</div></section>' +
+        '<div class="actions"><button class="primary" id="askNow" type="button" ' + (state.ai.mode === "off" ? "disabled" : "") + '>✦ Ask Agent</button>' +
+        '<button class="secondary" id="stageNow" type="button" ' + (!eligible ? "disabled" : "") + '>' + (state.staged.has(node.node_id) ? "Remove from basket" : "Add to basket") + '</button></div>';
+      $("askNow").addEventListener("click", () => {
+        state.tab = "agent";
+        renderInspector();
+        requestAnimationFrame(() => $("questionInput")?.focus());
+      });
+      $("stageNow").addEventListener("click", () => toggleStage(node.node_id));
+    }
+
+    function renderAgent(node) {
+      if (state.ai.mode === "off") {
+        $("inspectBody").innerHTML = '<div class="offline"><strong style="display:block;color:#43514c;margin-bottom:4px">AI is off</strong>Tree navigation, previews, relationships and reversible cleanup still work. Configure an Agent only when you want an explanation.</div>';
+        return;
+      }
+      const messages = state.chats.get(node.node_id) || [];
+      const pending = state.pending.has(node.node_id);
+      const messageHtml = messages.length ? messages.map(message =>
+        '<div class="message ' + message.role + '">' + lines(message.text) + (message.source ? '<span class="source">' + escapeHtml(message.source) + '</span>' : "") + '</div>'
+      ).join("") : '<div class="message agent">Ask what generated this path, whether it can be rebuilt, and what could break if it moves. Clean Your Data puts metadata, not the file preview, in the stdin prompt.</div>';
+      $("inspectBody").innerHTML =
+        '<section class="section"><div class="agent-head"><div class="agent-id"><div class="avatar">AI</div><div><strong>' + escapeHtml(state.ai.provider) + '</strong><span>answers stay attached to this path</span></div></div><span class="risk review">ADVICE</span></div>' +
+        '<div class="conversation" id="conversation">' + messageHtml +
+          (pending ? '<div class="message agent"><span class="thinking">Thinking <i></i><i></i><i></i></span></div>' : "") +
+        '</div><form class="ask-form" id="askForm"><input id="questionInput" maxlength="2000" autocomplete="off" placeholder="Ask about this exact path"><button class="send" type="submit" aria-label="Send" ' + (pending ? "disabled" : "") + '>↑</button></form></section>' +
+        '<section class="section"><div class="section-title"><h2>Context sent</h2><span>metadata only</span></div><div class="evidence"><div class="evidence-row"><span class="check">✓</span><span>Redacted path, name, kind, size, time, category and measurement state</span></div><div class="evidence-row"><span class="check">×</span><span>No preview, file body, credentials or permission to clean</span></div></div></section>';
+      const conversation = $("conversation");
+      conversation.scrollTop = conversation.scrollHeight;
+      $("askForm").addEventListener("submit", event => {
+        event.preventDefault();
+        const question = $("questionInput").value.trim();
+        if (question) askAgent(node, question);
+      });
+    }
+
+    async function askAgent(node, question) {
+      const messages = state.chats.get(node.node_id) || [];
+      messages.push({ role: "user", text: question });
+      state.chats.set(node.node_id, messages);
+      state.pending.add(node.node_id);
+      renderInspectorHeader();
+      renderInspector();
+      try {
+        const result = await api("/api/ask", { method: "POST", body: JSON.stringify({ node_id: node.node_id, question }) });
+        messages.push({ role: "agent", text: result.answer, source: result.provider_message });
+      } catch (error) {
+        messages.push({ role: "agent", text: error.message, source: "No file action was taken." });
+      } finally {
+        state.pending.delete(node.node_id);
+        if (state.selectedId === node.node_id && state.tab === "agent") renderInspector();
+        renderInspectorHeader();
+      }
+    }
+
+    async function renderRelations(node) {
+      if (!state.relations.has(node.node_id)) {
+        $("inspectBody").innerHTML = '<div class="empty">Building a bounded metadata relationship map…</div>';
+        try {
+          state.relations.set(node.node_id, await api("/api/relationships?node_id=" + encodeURIComponent(node.node_id)));
+        } catch (error) {
+          $("inspectBody").innerHTML = '<div class="empty">' + escapeHtml(error.message) + '</div>';
+          return;
+        }
+        if (state.selectedId !== node.node_id || state.tab !== "relations") return;
+      }
+      const data = state.relations.get(node.node_id);
+      $("inspectBody").innerHTML =
+        '<section class="section"><div class="section-title"><h2>File relationships</h2><span>' + escapeHtml(data.status) + ' · ' + Number(data.files_scanned || 0) + ' files</span></div>' +
+          (data.relations || []).map(item => '<div class="relation"><strong>' + escapeHtml(item.title) + '</strong><span>' + escapeHtml(item.detail) + '</span></div>').join("") +
+        '</section><section class="section"><div class="impact"><strong>Confidence boundary</strong>This is inferred from names, sizes, project markers and directory shape. Without tracing, it does not claim which exact Agent conversation wrote a file.</div></section>';
+    }
+
+    async function toggleStage(nodeId) {
+      try {
+        const result = await api("/api/stage", { method: "POST", body: JSON.stringify({ node_id: nodeId }) });
+        state.staged = new Set((result.basket.nodes || []).map(node => node.node_id));
+        state.byId.get(nodeId).staged = result.staged;
+        renderAll();
+        renderInspector();
+        showToast(result.staged ? "Exact path added to the cleanup basket. Nothing moved." : "Path removed from the cleanup basket.");
+      } catch (error) {
+        showToast(error.message, false, true);
+      }
+    }
+
+    function renderBasket() {
+      const staged = state.nodes.filter(node => state.staged.has(node.node_id));
+      const total = staged.reduce((sum, node) => sum + Number(node.allocated_bytes || 0), 0);
+      $("basketCount").textContent = staged.length;
+      $("stagedSize").textContent = bytes(total);
+      if (staged.length) {
+        $("basketTitle").textContent = staged.length + " exact path" + (staged.length === 1 ? "" : "s") + " staged · " + bytes(total);
+        $("basketDetail").textContent = staged.map(node => node.name).join(" · ") + " · nothing has moved";
+      } else {
+        $("basketTitle").textContent = "Cleanup basket is empty";
+        $("basketDetail").textContent = "Inspect an exact path before staging it.";
+      }
+      $("reviewButton").disabled = !staged.length;
+      $("trashButton").disabled = !staged.length;
+    }
+
+    function renderAll() {
+      renderTree();
+      renderBasket();
+      renderInspectorHeader();
+      $("agentLabel").textContent = state.ai.provider || "AI";
+    }
+
+    function showToast(message, undo = false, error = false) {
+      clearTimeout(showToast.timer);
+      $("toastText").textContent = message;
+      $("toastAction").hidden = !undo;
+      $("toast").classList.toggle("error", error);
+      $("toast").classList.add("visible");
+      showToast.timer = setTimeout(() => $("toast").classList.remove("visible"), 5200);
+    }
+
+    function openModal(id) { $(id).hidden = false; }
+    function closeModal(id) { $(id).hidden = true; }
+
+    document.querySelectorAll(".tabs button").forEach(button => button.addEventListener("click", () => {
+      state.tab = button.dataset.tab;
+      renderInspector();
+    }));
+
+    document.querySelectorAll(".side-nav button").forEach(button => button.addEventListener("click", async () => {
+      document.querySelectorAll(".side-nav button").forEach(item => item.classList.remove("active"));
+      button.classList.add("active");
+      state.view = button.dataset.view;
+      if (state.view === "history") {
+        try {
+          const payload = await api("/api/history");
+          $("tree").innerHTML = payload.history.length ? payload.history.slice().reverse().map(row =>
+            '<div class="tree-row" style="--depth:0"><div class="name"><span class="toggle"></span><span class="file-icon">◷</span><strong>' + escapeHtml(row.name) + '</strong></div><div></div><div class="size">' + escapeHtml(row.human_size || "—") + '</div><div class="date">' + escapeHtml(row.status) + '</div></div>'
+          ).join("") : '<div class="empty">No cleanup history yet.</div>';
+        } catch (error) { showToast(error.message, false, true); }
+      } else renderTree();
+    }));
+
+    $("searchInput").addEventListener("input", event => { state.query = event.target.value.trim(); renderTree(); });
+    $("sortButton").addEventListener("click", event => {
+      state.sortBySize = !state.sortBySize;
+      event.currentTarget.classList.toggle("active", state.sortBySize);
+      renderTree();
+    });
+    $("helpButton").addEventListener("click", () => openModal("helpModal"));
+    $("agentButton").addEventListener("click", () => {
+      $("modeInput").value = state.ai.mode || "auto";
+      $("commandInput").value = "";
+      $("commandInput").placeholder = state.ai.command_configured
+        ? "Configured command hidden — enter a replacement"
+        : "ollama run qwen3:8b";
+      $("commandField").hidden = $("modeInput").value !== "command";
+      $("environmentNote").hidden = !state.ai.managed_by_environment;
+      $("modeInput").disabled = Boolean(state.ai.managed_by_environment);
+      $("commandInput").disabled = Boolean(state.ai.managed_by_environment);
+      $("saveConfigButton").disabled = Boolean(state.ai.managed_by_environment);
+      if (state.ai.managed_by_environment) $("commandField").hidden = false;
+      openModal("configModal");
+    });
+    $("modeInput").addEventListener("change", () => { $("commandField").hidden = $("modeInput").value !== "command"; });
+    $("saveConfigButton").addEventListener("click", async () => {
+      try {
+        state.ai = await api("/api/config", { method: "POST", body: JSON.stringify({ mode: $("modeInput").value, command: $("commandInput").value }) });
+        closeModal("configModal");
+        renderAll();
+        renderInspector();
+        showToast("AI configuration saved locally. No API key was stored.");
+      } catch (error) { showToast(error.message, false, true); }
+    });
+
+    document.querySelectorAll("[data-close]").forEach(button => button.addEventListener("click", () => closeModal(button.dataset.close)));
+    document.querySelectorAll(".backdrop").forEach(backdrop => backdrop.addEventListener("click", event => {
+      if (event.target === backdrop) closeModal(backdrop.id);
+    }));
+
+    $("scanButton").addEventListener("click", async event => {
+      const button = event.currentTarget;
+      button.disabled = true;
+      button.innerHTML = "<span>◌</span><span>Scanning</span>";
+      try {
+        const payload = await api("/api/rescan", { method: "POST", body: "{}" });
+        state.inspect.clear();
+        state.preview.clear();
+        state.relations.clear();
+        applySession(payload);
+        showToast("Metadata map refreshed.");
+      } catch (error) { showToast(error.message, false, true); }
+      button.disabled = false;
+      button.innerHTML = "<span>↻</span><span>Rescan</span>";
+    });
+
+    $("reviewButton").addEventListener("click", () => {
+      const staged = state.nodes.filter(node => state.staged.has(node.node_id));
+      selectNode(staged[0].node_id, true);
+      state.tab = "inspect";
+      renderInspector();
+      showToast("Review each selected path and its cleanup reason before moving anything.");
+    });
+
+    $("trashButton").addEventListener("click", () => {
+      const staged = state.nodes.filter(node => state.staged.has(node.node_id));
+      $("trashPaths").innerHTML = staged.map(node => "<code>" + escapeHtml(node.path) + "</code>").join("");
+      openModal("trashModal");
+    });
+
+    $("confirmTrashButton").addEventListener("click", async event => {
+      const button = event.currentTarget;
+      const staged = state.nodes.filter(node => state.staged.has(node.node_id));
+      const confirmations = Object.fromEntries(staged.map(node => [node.node_id, node.path]));
+      button.disabled = true;
+      try {
+        const result = await api("/api/trash", { method: "POST", body: JSON.stringify({ confirmations }) });
+        closeModal("trashModal");
+        state.inspect.clear();
+        state.preview.clear();
+        state.relations.clear();
+        applySession(result.session, false);
+        state.lastUndoAvailable = result.moved > 0;
+        const failed = result.errors || [];
+        if (failed.length) {
+          const summary = result.moved
+            ? result.moved + " moved; " + failed.length + " could not be moved. The remaining path stays in the basket."
+            : "No paths moved. The selected path may have changed or become unavailable.";
+          showToast(summary, result.moved > 0, true);
+        } else {
+          showToast(result.moved + " exact path" + (result.moved === 1 ? "" : "s") + " moved to system Trash.", true);
+        }
+      } catch (error) { showToast(error.message, false, true); }
+      button.disabled = false;
+    });
+
+    async function undoTrash() {
+      try {
+        const result = await api("/api/undo", { method: "POST", body: "{}" });
+        applySession(result.session, false);
+        const failed = result.errors || [];
+        state.lastUndoAvailable = failed.length > 0;
+        if (failed.length) {
+          const summary = result.restored
+            ? result.restored + " restored; " + failed.length + " could not be restored. Undo remains available."
+            : "The Trash item could not be restored. Its original location may now be occupied.";
+          showToast(summary, true, true);
+        } else {
+          showToast(result.restored + " path" + (result.restored === 1 ? "" : "s") + " restored.");
+        }
+      } catch (error) { showToast(error.message, false, true); }
+    }
+    $("toastAction").addEventListener("click", undoTrash);
+
+    $("backButton").addEventListener("click", () => {
+      if (state.historyIndex > 0) {
+        state.historyIndex -= 1;
+        selectNode(state.history[state.historyIndex], false);
+      }
+    });
+    $("forwardButton").addEventListener("click", () => {
+      if (state.historyIndex < state.history.length - 1) {
+        state.historyIndex += 1;
+        selectNode(state.history[state.historyIndex], false);
+      }
+    });
+    $("quitButton").addEventListener("click", async () => {
+      try {
+        await api("/api/shutdown", { method: "POST", body: "{}" });
+        $("stopped").hidden = false;
+      } catch (error) { showToast(error.message, false, true); }
+    });
+
+    function moveSelection(delta) {
+      const visible = visibleNodes();
+      if (!visible.length) return;
+      const current = Math.max(0, visible.findIndex(node => node.node_id === state.selectedId));
+      const next = Math.max(0, Math.min(visible.length - 1, current + delta));
+      selectNode(visible[next].node_id, false);
+      document.querySelector('.tree-row[data-id="' + CSS.escape(visible[next].node_id) + '"]')?.scrollIntoView({ block: "nearest" });
+    }
+    function jumpSelection(end) {
+      const visible = visibleNodes();
+      if (!visible.length) return;
+      const node = visible[end ? visible.length - 1 : 0];
+      selectNode(node.node_id, false);
+      document.querySelector('.tree-row[data-id="' + CSS.escape(node.node_id) + '"]')?.scrollIntoView({ block: "nearest" });
+    }
+
+    document.addEventListener("keydown", event => {
+      const editable = ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName);
+      if (event.key === "Escape") {
+        const open = Array.from(document.querySelectorAll(".backdrop")).find(modal => !modal.hidden);
+        if (open) closeModal(open.id);
+        else if (editable) document.activeElement.blur();
+        return;
+      }
+      if (event.key === "/" && !editable) {
+        event.preventDefault();
+        $("searchInput").focus();
+        return;
+      }
+      if (editable || Array.from(document.querySelectorAll(".backdrop")).some(modal => !modal.hidden)) return;
+      if (event.key === "j" || event.key === "ArrowDown") { event.preventDefault(); moveSelection(1); return; }
+      if (event.key === "k" || event.key === "ArrowUp") { event.preventDefault(); moveSelection(-1); return; }
+      if (event.key === "Enter") { toggleFolder(state.byId.get(state.selectedId)); return; }
+      if (event.key === "a" || event.key === "A") {
+        if (state.ai.mode !== "off") {
+          state.tab = "agent";
+          renderInspector();
+          requestAnimationFrame(() => $("questionInput")?.focus());
+        }
+        return;
+      }
+      if (event.key === "u") { undoTrash(); return; }
+      if (event.key === "G") { state.vimPrefix = ""; jumpSelection(true); return; }
+      if (event.key === "g") {
+        if (state.vimPrefix === "g") {
+          clearTimeout(state.vimTimer);
+          state.vimPrefix = "";
+          jumpSelection(false);
+        } else {
+          state.vimPrefix = "g";
+          clearTimeout(state.vimTimer);
+          state.vimTimer = setTimeout(() => { state.vimPrefix = ""; }, 650);
+        }
+        return;
+      }
+      if (event.key === "d") {
+        if (state.vimPrefix === "d") {
+          clearTimeout(state.vimTimer);
+          state.vimPrefix = "";
+          toggleStage(state.selectedId);
+        } else {
+          state.vimPrefix = "d";
+          clearTimeout(state.vimTimer);
+          state.vimTimer = setTimeout(() => { state.vimPrefix = ""; }, 650);
+        }
+        return;
+      }
+      if (event.key === "?") openModal("helpModal");
+    });
+
+    async function boot() {
+      try {
+        const payload = await api("/api/session");
+        applySession(payload, false);
+      } catch (error) {
+        $("tree").innerHTML = '<div class="empty">' + escapeHtml(error.message) + '</div>';
+        showToast(error.message, false, true);
+      }
+    }
+    boot();
+  </script>
+</body>
+</html>

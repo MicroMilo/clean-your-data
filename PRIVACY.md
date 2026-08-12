@@ -1,6 +1,14 @@
 # Privacy
 
-Clean Your Data is designed for local, metadata-first analysis. The bundled scanner does not make network requests and does not upload reports. An agent may download this public repository, but the scan itself runs on the user's machine. The optional TUI cleanup loop can move an exact user-confirmed path to the local system Trash; that action and its undo record stay on the machine.
+Clean Your Data is designed for local, metadata-first analysis. The bundled scanner and GUI server do not make network requests and do not upload reports. An agent may download this public repository, but the scan itself runs on the user's machine. The optional GUI/TUI cleanup loop can move an exact user-confirmed path to the local system Trash; that action and its undo record stay on the machine.
+
+## Local Browser GUI
+
+- The GUI binds only to `127.0.0.1` on a random port by default.
+- It validates the loopback Host; its JSON API requires a random per-run token and rejects cross-origin browser requests.
+- Public API responses omit absolute local paths and internal `_local_path` fields.
+- The browser receives redacted paths, bounded metadata, and only the preview the user explicitly selects.
+- Closing the server ends the session. Agent conversations in the browser are not persisted by Clean Your Data.
 
 ## Default Redaction
 
@@ -34,6 +42,14 @@ Avoid sharing reports created with:
 - Document text.
 - Secrets, tokens, keychains, or credentials.
 - Source file contents.
+
+## Optional AI Commands
+
+AI is disabled or configured by the user. Clean Your Data can call an already authenticated Codex CLI or a trusted custom stdin/stdout command. It stores the selected mode and custom-command arguments verbatim in `~/.clean-your-data/ai-config.json`, with user-only file permissions where supported. The GUI reports that a command is configured but does not echo its arguments through the local browser API; `cyd config ai --show` is the explicit terminal view. There is no API-key field: never put credentials in command arguments, and keep them in the provider's environment or credential store.
+
+The opt-in tracer also stores the traced command and its arguments verbatim in the local `~/.clean-your-data/provenance.sqlite3` database. Do not put credentials directly in a traced command line. The state directory and database use user-only permissions where the operating system supports them.
+
+The stdin prompt constructed by Clean Your Data contains a redacted path, name, kind, size, modified time, category, and measurement status. Clean Your Data does not place the selected file preview or file contents in that prompt. The built-in Codex mode uses a read-only, ephemeral sandbox. A custom command still has its own operating-system permissions and may use its own network connection or credential store; configure only a trusted command and review that provider's privacy behavior separately.
 
 ## Sharing Reports
 

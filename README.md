@@ -8,48 +8,100 @@
   <img src="https://raw.githubusercontent.com/MicroMilo/clean-your-data/main/assets/github-social-preview-v1.png" alt="Clean Your Data: a safe map before you clean" width="100%">
 </p>
 
-**A local-first file system interface for humans and AI agents.**
+**A local-first disk explorer that helps humans and Agents understand a path before anything moves.**
 
-Browse any path, understand what lives there, and take reversible actions.
+**Clean Your Data** turns an opaque folder into an interactive space map. Open a directory, follow the largest branches, preview a file locally, ask your own Agent about one exact path, and move only reviewed items to system Trash with undo.
 
-**Clean Your Data** is a keyboard-first terminal disk explorer. It turns an opaque folder into a navigable map with search, filters, sorting, tabs, file previews, local AI questions, duplicate detection, and approval-gated moves to Trash. It is built for humans first, with a metadata contract that local Agents can understand.
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/MicroMilo/clean-your-data/main/assets/clean-your-data-demo.gif" alt="Real terminal demo of Clean Your Data" width="100%">
-</p>
+The browser GUI and keyboard-first TUI use the same scanner and safety gates. AI is optional and user-configured; the explorer works without an API key or network connection.
 
 <p align="center">
-  <a href="https://raw.githubusercontent.com/MicroMilo/clean-your-data/main/assets/clean-your-data-demo.mp4">Watch or download the 20-second MP4 demo</a>
+  <img src="https://raw.githubusercontent.com/MicroMilo/clean-your-data/main/assets/clean-your-data-gui-v0.4.jpg" alt="Clean Your Data local browser GUI" width="100%">
 </p>
 
-## Install And Explore
+## Install And Open
 
-Install the package and launch the explorer from any directory:
+Install directly from GitHub, then open any directory:
 
 ```bash
-# Install the current GitHub version immediately.
 uv tool install git+https://github.com/MicroMilo/clean-your-data.git
 
-# Explore the current directory, or pass any path you want to inspect.
-cyd
+# Local browser GUI
+cyd gui ~/Documents/project
+
+# Terminal UI
 cyd ~/Documents/project
 ```
 
-When the package is published to PyPI, the install becomes:
+From PyPI after the first package release:
 
 ```bash
-python3 -m pip install --user clean-your-data
-# or: uv tool install clean-your-data
+uv tool install clean-your-data
 ```
 
-For a checkout under development, run `python3 -m pip install .`. `cyd --version` prints the installed version. The demo uses a sanitized copy of this repository; it does not use a real user's home directory, `~/github`, or `node_modules`.
+`cyd gui` starts a random-port server on `127.0.0.1` and opens the browser. It is not exposed to the LAN. Stop it from the square button or with `Ctrl-C`. For a source checkout, run `python3 -m pip install .` first.
+
+## Why This Exists
+
+| Question | Product behavior |
+| --- | --- |
+| Where did the space go? | A relative-size tree makes large siblings visible and loads deeper folders on demand. |
+| What is this path? | Local preview, metadata, inferred relationships, and a per-path Agent conversation stay together. |
+| Can I move it? | The scanner separates rebuildable candidates, review items, and protected data. A suggestion is never permission. |
+| What if the decision is wrong? | Cleanup stages an exact path, confirms it again, moves it to system Trash, rescans, and supports undo. |
+| Can I stay in the terminal? | The TUI provides the same scan, preview, Agent context, cleanup gate, Trash, and undo model. |
+
+This is not a generic file manager and it does not promise automatic deletion. It is the investigation and decision layer between an unfamiliar path and a file operation.
+
+## Optional Agent
+
+The explorer does not bundle an LLM account. It can use an already authenticated Codex CLI or any trusted stdin/stdout command:
+
+```bash
+cyd config ai --auto
+cyd config ai --codex
+cyd config ai --command 'ollama run qwen3:8b'
+cyd config ai --off
+cyd config ai --show
+```
+
+The GUI exposes the same setting. Commands are executed as direct arguments, never through a shell. Clean Your Data has no API-key field, but saved custom-command arguments are stored verbatim. Never put a credential in the command; keep provider credentials in that provider's own environment or credential store.
+
+The prompt that Clean Your Data writes to the configured command contains only bounded metadata for the selected path: redacted path, name, kind, size, modified time, category, and measurement status. Clean Your Data does not put file previews or file contents in that prompt. The built-in Codex mode runs in a read-only, ephemeral sandbox; a custom command still has its own operating-system permissions, so configure only a command you trust. Agent answers are advice and cannot approve or execute cleanup through Clean Your Data.
+
+## Optional Agent Trace
+
+Run an Agent through `cyd trace` when you want to know which paths changed during that session:
+
+```bash
+# Trace the current directory while Codex works.
+cyd trace -- codex
+
+# Trace a specific project while Claude Code works there.
+cyd trace --path ~/projects/demo -- claude
+
+# Watch more than one local scope and keep a machine-readable report.
+cyd trace \
+  --path ~/projects/demo \
+  --path ~/.codex \
+  --format json \
+  --output trace.json \
+  -- codex
+```
+
+The command after `--` runs normally. The tracer takes bounded metadata snapshots while it runs and reports paths that were created, modified, deleted, or observed briefly. It records the session, command, process id, time, scope, and before/after stat fields, but never reads file contents or environment variables. Trace records stay in the local `~/.clean-your-data/provenance.sqlite3` database with user-only permissions where supported. Command arguments are stored verbatim, so never put credentials directly on a traced command line. The default scope is the command's working directory; use `--path` explicitly when an Agent writes elsewhere.
+
+The report says that a change was **observed while the traced command was running**. It does not claim kernel-level proof of the exact child process that wrote a path. Historical files that were created before tracing may remain unattributed. This is intentional: evidence, inference, and unknowns stay separate.
 
 ## Privacy Boundary
 
 - Read-only by default. The initial map reads metadata, not file contents.
-- No uploads. The scanner never changes files; the TUI can move only an exact, user-confirmed path to the system Trash.
+- No uploads by the scanner or local GUI. A configured Agent command follows its own network policy.
+- The GUI listens only on `127.0.0.1`; it validates the loopback Host, requires a random per-run API token, and rejects cross-origin browser requests.
+- Cleanup is separate from scanning. GUI and TUI can move only an exact, user-confirmed, eligible path to system Trash.
 - Exact duplicate matching is opt-in and hashes candidate files locally; raw hashes are not written to reports.
 - Home paths are redacted to `~` by default. Review project and folder names before sharing a report.
+- The active scope, home/root, Trash, VCS metadata, credential stores, credential config, app-managed data, cloud-sync roots, unknown paths, and incomplete measurements are blocked from cleanup.
+- Agent tracing is opt-in, metadata-only, local, and bounded by the selected `--path` roots and `--max-entries` limit. The traced Agent may have its own network or authentication behavior; the tracer does not add network access.
 
 ## Give It To Your Agent
 
@@ -80,16 +132,16 @@ The optional Skill adds a repeatable audit protocol for Agents. The package is t
 ## The Workflow
 
 ```text
-discover -> classify -> explain -> assess risk -> plan action -> compare over time
+map -> inspect -> ask -> assess risk -> stage -> confirm -> Trash -> undo
 ```
 
 The useful question is not only “what is large?” It is:
 
 > What is this data, who owns it, can it be rebuilt, and what can I safely do next?
 
-## Quick Start
+## Detailed Terminal Usage
 
-After installing the package:
+After installing the package, open the TUI:
 
 ```bash
 cyd ~/Documents/project
@@ -290,11 +342,11 @@ No third-party Python packages are required.
 
 ## 中文说明
 
-**先看清，再动手。**
+**先看清，再动手。面向人和 Agent 的本地磁盘浏览器。**
 
-**Clean Your Data** 把电脑里的文件沉积转换成一份隐私友好、可以做决定的本地审计报告。它会检查 Desktop、Downloads、AI 工作区、Git 仓库、微信/飞书等协作 App、本地云盘，以及 `node_modules`、`.venv`、`build` 等可重建产物。
+**Clean Your Data** 把陌生目录变成可以继续探索的空间地图。你可以沿着大目录往下看，在本地预览文件，针对某个精确路径询问自己配置的 Agent，再把经过复核的项目移入系统废纸篓并撤销。
 
-默认只读、只读取元数据；TUI 仅在选中文件时提供受限的本地预览，不上传数据。清理时必须先用 `dd` 加入候选，再确认精确路径；确认后只移入系统废纸篓，不做永久删除，动作完成后会重新扫描指定路径，`u` 可以撤销最近一次移动。
+GUI 和 TUI 共用同一套扫描器与安全门禁。默认只读取元数据；选中文件时才在本地读取最多 4 KB、14 行预览，疑似凭据和二进制文件不会展示。AI 完全可选，不配置也能正常浏览、分析关系和进行可逆操作。
 
 ### 交给你的 Agent
 
@@ -310,12 +362,12 @@ Agent 可以下载仓库、读取 `audit-local-files/SKILL.md`，然后在用户
 
 ### 为什么不直接问 Codex
 
-Codex 可以完成一次分析，但这个仓库把每次都应该保持一致的部分固定下来：覆盖范围、隐私边界、分类标准、风险判断、行动审批和历史比较。它不是替代 Codex，而是让 Codex 以一套可重复、可审计的本地数据体检流程工作。
+Codex 可以完成一次分析，但很难持续保留“当前选中了什么、它和空间分布的关系、预览边界、清理篮状态以及撤销记录”。这个产品把这些状态放进一个人可以直接操控的界面，并只给 Agent 一份结构化、受限的元信息。Agent 负责解释，人负责决定，程序负责执行安全门禁。
 
 ### 工作流
 
 ```text
-发现 -> 分类 -> 解释 -> 追问 -> 判断风险 -> 生成行动计划 -> 定期比较
+空间地图 -> 检查 -> 询问 -> 判断风险 -> 加入清理篮 -> 精确确认 -> 废纸篓 -> 撤销
 ```
 
 真正要回答的不是“哪里最大”，而是：
@@ -324,16 +376,40 @@ Codex 可以完成一次分析，但这个仓库把每次都应该保持一致�
 
 ### 快速运行
 
-安装包后，从任意目录打开磁盘浏览器：
+安装包后，从任意目录打开浏览器 GUI 或终端 TUI：
 
 ```bash
 # 直接安装 GitHub 当前版本
 uv tool install git+https://github.com/MicroMilo/clean-your-data.git
 
-# 浏览当前目录，或传入指定路径
-cyd
+# 本地浏览器 GUI
+cyd gui ~/Documents/project
+
+# 终端 TUI
 cyd ~/Documents/project
 ```
+
+`cyd gui` 只监听 `127.0.0.1` 的随机端口，不会暴露到局域网；服务端还会校验本地 Host。每次运行都有随机 API 令牌，并拒绝跨站请求。方形停止按钮和 `Ctrl-C` 都可以关闭本地服务。
+
+AI 不需要内置在产品里。你可以复用本机已经登录的 Codex CLI，接入 Ollama 等可信命令，或彻底关闭：
+
+```bash
+cyd config ai --auto
+cyd config ai --codex
+cyd config ai --command 'ollama run qwen3:8b'
+cyd config ai --off
+cyd config ai --show
+```
+
+配置没有 API-key 字段，也不会通过 shell 执行命令，但自定义命令及参数会原样保存在本地，因此绝不能把密钥写进命令参数。凭据应继续放在对应工具自己的环境变量或凭据存储中。Clean Your Data 写入该命令 stdin 的 Prompt 只包含所选路径的匿名路径、名称、类型、大小、修改时间、分类和测量状态，不包含右侧文件预览或文件正文。内置 Codex 模式使用只读、临时沙箱；自定义命令仍拥有它自己的操作系统权限，因此只能配置你信任的命令。
+
+如果你想观察 Agent 在一个项目里留下了哪些文件，可以直接包住它运行：
+
+```bash
+cyd trace --path ~/Documents/project -- codex
+```
+
+`trace` 只记录运行期间观察到的创建、修改和删除路径，以及命令、时间和前后元信息；不会读取文件正文。默认把追踪记录保存在 `~/.clean-your-data/provenance.sqlite3`，并在系统支持时设为仅当前用户可读。命令及参数会原样保存在本地，因此不要把密钥直接写进被追踪的命令行。它能证明“在这次被追踪的 Agent 会话期间观察到了变化”，不能对历史文件或并发进程做超出证据的断言。
 
 开发仓库时可以在仓库根目录执行 `python3 -m pip install .`。发布到 PyPI 后，也可以执行 `python3 -m pip install --user clean-your-data`。`cyd --version` 查看版本。
 
@@ -392,13 +468,15 @@ JSON 报告还会区分 `measured`、`timeout`、`error`、`missing` 和 `unknow
 
 ### 隐私与安全
 
-扫描器只读取路径、占用大小、修改时间和可选的 Git 状态计数；不会读取聊天、浏览器历史、邮件正文、文档正文、源码、凭据或 keychain。选中文件时，TUI 会额外提供一个本地预览例外，最多读取 4 KB、14 行，跳过二进制和疑似凭据文件，且不会发送给 Codex。默认把 home 目录显示为 `~`，默认不输出 Git origin URL。清理历史保存在本机 `~/.clean-your-data/cleanup-history.json`，书签、最近路径和最后工作区保存在 `~/.clean-your-data/workspace-state.json`；这些文件只在本地使用，不会写入报告或上传。任何公开分享前，都应检查项目名和文件夹名。
+扫描器只读取路径、占用大小、修改时间和可选的 Git 状态计数；不会读取聊天、浏览器历史、邮件正文、文档正文、源码、凭据或 keychain。选中文件时，GUI/TUI 会额外提供一个本地预览例外，最多读取 4 KB、14 行，跳过二进制和疑似凭据文件，且不会发送给 Agent。默认把 home 目录显示为 `~`，默认不输出 Git origin URL。清理历史保存在本机 `~/.clean-your-data/cleanup-history.json`，书签、最近路径和最后工作区保存在 `~/.clean-your-data/workspace-state.json`；这些文件只在本地使用，不会写入报告或上传。任何公开分享前，都应检查项目名和文件夹名。
+
+扫描根目录、home、系统根目录、废纸篓、`.git`/`.ssh` 等关键目录、`.env` 等凭据配置、App 私有数据、云同步目录、未知分类和未完整测量的路径都不能进入清理篮。Agent 的回答只是建议，不能绕过这些确定性规则。
 
 项目维护时会使用真实本机审计的聚合匿名证据包，让不同 Agent 角色独立评审，再通过确定性 fixture 和 schema 测试后发布；原始本机报告不会进入仓库。
 
 ### 依赖
 
-安装包没有第三方运行时依赖。需要 Python 3.9+；macOS/Linux 上的 `du`；只有在进行 Git 检查时才需要 `git`；TUI 需要支持 `curses` 的交互式终端。若要按 `a` 或 `dd` 询问 Codex，还需要本机已登录的 `codex` CLI，或自行配置 `CLEAN_YOUR_DATA_AI_COMMAND`；`D` 的深度关系分析只使用 Python 标准库。`t`/`v`/`c`/`o` 会调用本机已有的 Terminal、VS Code、Cursor 或 Finder；移动到系统废纸篓使用本机文件系统。
+安装包没有第三方运行时依赖。需要 Python 3.9+；macOS/Linux 上的 `du`；只有在进行 Git 检查时才需要 `git`；TUI 需要支持 `curses` 的交互式终端；GUI 使用 Python 标准库启动本地 HTTP 服务并调用默认浏览器。需要 AI 解释时，还要有本机已登录的 `codex` CLI，或自行配置可信的 stdin/stdout 命令；其余浏览与清理功能不依赖 LLM。
 
 ## License
 

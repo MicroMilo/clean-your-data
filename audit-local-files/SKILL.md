@@ -1,6 +1,6 @@
 ---
 name: audit-local-files
-description: Turn local file sprawl into a privacy-preserving, decision-ready audit. Use when someone asks to analyze or organize Desktop, Downloads, Documents, Codex or other AI workspaces, Git repositories, cloud-sync folders, or local storage from Feishu/Lark, WeChat, Slack, Teams, Discord, Telegram, QQ, DingTalk, Zoom, mail, or browsers. Also use when proposing a safe archive, migration, cleanup, or before/after storage comparison.
+description: Explain local file provenance and turn local file sprawl into a privacy-preserving, decision-ready audit. Use when someone asks what an Agent created, which paths changed during a local Agent session, what owns a file, or how to analyze Desktop, Downloads, Documents, Codex or other AI workspaces, Git repositories, cloud-sync folders, or local storage from Feishu/Lark, WeChat, Slack, Teams, Discord, Telegram, QQ, DingTalk, Zoom, mail, or browsers. Also use when proposing a safe archive, migration, cleanup, or before/after storage comparison.
 ---
 
 # Clean Your Data
@@ -19,6 +19,7 @@ Use this skill as a local data audit protocol around the `cyd` terminal file-sys
 - When the user names a path for closer inspection, keep that path redacted too. The interactive map may expose only home-relative paths by default.
 - Exact duplicate detection is opt-in. Only run `--duplicates` after the user explicitly asks for duplicate matching; it reads candidate file bytes locally for SHA-256, never uploads them, and never changes files.
 - Duplicate groups are review evidence, not cleanup authorization. Preserve the distinction between independent copies and hard-link aliases, and do not add duplicate bytes to parent target or artifact totals.
+- Agent tracing is opt-in and bounded. It records metadata-only changes under explicit `--path` roots while a user-selected command runs; it does not read contents or environment variables, and it does not claim kernel-level proof of the exact child process.
 
 ## Workflow
 
@@ -71,6 +72,19 @@ python3 scripts/audit_local_files.py \
 The map is metadata-first. It lets the user select a folder or file, inspect its name, path, size, last-change time, category, and measurement state, see a bounded local text preview for files, search loaded nodes fuzzily, filter and sort the tree, edit local tags, switch session-local tabs, edit a question, ask Codex, launch local tools, save a bookmark, and stage a cleanup candidate. The Codex call runs in a background worker so navigation remains responsive; the answer stays attached to the selected node. When the `codex` CLI is available, `a` uses a read-only ephemeral session, while `dd` sends a separate metadata-only cleanup-advisor prompt; neither prompt authorizes or executes a file operation. Otherwise set `CLEAN_YOUR_DATA_AI_COMMAND` to a trusted local command that reads the prompt from stdin. Press `C` to copy the metadata-only context. `D` performs a bounded metadata-only relationship analysis that can connect project markers, source files, dependencies, build directories, outputs, and possible repeated files. Read `references/interactive-explorer.md` for the contract and follow-up loop.
 
 The advanced browsing controls are `/` fuzzy search, `f` filter, `s` sort, `T` local tags, `N` new tab, `gt`/`gT` next or previous tab, and `X` close tab. Search and filters operate only on nodes already loaded into the map; they do not imply that an unopened directory was scanned. Tags are stored locally with the existing workspace state and are not included in reports or Agent prompts.
+
+### Agent Session Trace
+
+When the user wants to know what an Agent changed during a session, run the Agent through the package tracer instead of trying to reconstruct causality from old timestamps:
+
+```bash
+cyd trace --path /path/to/project -- codex
+cyd trace --path /path/to/project -- claude
+```
+
+The command after `--` runs normally. The tracer takes bounded metadata snapshots while it runs and reports `created`, `modified`, `deleted`, and transient `created + deleted` paths. It stores the local session and event evidence in `~/.clean-your-data/provenance.sqlite3`. Use repeated `--path` options when the Agent writes to more than one known scope, and `--format json --output trace.json` for a structured handoff.
+
+Interpret the result as: "this path changed while the traced command was running." Do not rewrite that as proof that a particular child process created it. If the file predates the trace session, report its origin as unknown or inferred from separate evidence. A snapshot can miss a very short-lived change, hit the `--max-entries` limit, or be unable to read a protected path; preserve those limitations in the conclusion.
 
 ### TUI Cleanup Loop
 

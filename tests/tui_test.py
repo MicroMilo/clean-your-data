@@ -95,6 +95,9 @@ def main() -> int:
     assert state.selected()["name"] == "project"
     assert "metadata-only" in state.message
     assert [node["name"] for node in state.visible()] == ["project", "src", "lib"]
+    assert "3 folders" in tui.space_summary(state)
+    story = tui.space_story_lines(state, nodes[0], 40)
+    assert any("Largest visible area" in line for line, _ in story)
     state.selected_id = "space-grandchild-folder"
     assert tui.handle_key(None, state, "\n", 80) is True
     assert [node["name"] for node in state.visible()] == ["project", "src", "lib", "notes.txt"]
