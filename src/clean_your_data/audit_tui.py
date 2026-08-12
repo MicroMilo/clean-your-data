@@ -219,11 +219,8 @@ def read_file_preview(node: dict[str, Any]) -> list[str]:
         flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
         descriptor = os.open(path, flags)
         current_stat = os.fstat(descriptor)
-        expected_identity = tuple(node.get(key) for key in ("_stat_device", "_stat_inode", "_stat_mode"))
-        if all(value is not None for value in expected_identity):
-            current_identity = (int(current_stat.st_dev), int(current_stat.st_ino), int(current_stat.st_mode))
-            if current_identity != tuple(int(value) for value in expected_identity):
-                return ["Preview unavailable because this file changed after the scan. Rescan before opening it."]
+        if not matches_scanned_identity(node, current_stat):
+            return ["Preview unavailable because this file changed after the scan. Rescan before opening it."]
         if not stat_module.S_ISREG(current_stat.st_mode):
             return ["Preview unavailable because this path is not a regular file."]
         data = os.read(descriptor, PREVIEW_MAX_BYTES + 1)
@@ -274,6 +271,26 @@ def local_node_path(node: dict[str, Any]) -> Optional[Path]:
     return Path(str(local_path)).expanduser()
 
 
+def matches_scanned_identity(node: dict[str, Any], current_stat: os.stat_result) -> bool:
+    """Reject object replacement while accepting older nodes without ctime metadata."""
+    expected_basic = (node.get("_stat_device"), node.get("_stat_inode"), node.get("_stat_mode"))
+    if not all(value is not None for value in expected_basic):
+        return True
+    try:
+        current_basic = (int(current_stat.st_dev), int(current_stat.st_ino), int(current_stat.st_mode))
+        if current_basic != tuple(int(value) for value in expected_basic):
+            return False
+        expected_ctime = node.get("_stat_ctime_ns")
+        if expected_ctime is None:
+            return True
+        current_ctime = int(
+            getattr(current_stat, "st_ctime_ns", int(current_stat.st_ctime * 1_000_000_000))
+        )
+        return current_ctime == int(expected_ctime)
+    except (TypeError, ValueError):
+        return False
+
+
 def path_is_within(path: Path, parent: Path) -> bool:
     try:
         path.resolve().relative_to(parent.resolve())
@@ -318,11 +335,8 @@ def cleanup_gate(node: dict[str, Any]) -> tuple[bool, str]:
         current_stat = path.lstat()
     except OSError:
         return False, "the path could not be inspected again"
-    expected_identity = (node.get("_stat_device"), node.get("_stat_inode"), node.get("_stat_mode"))
-    if all(value is not None for value in expected_identity):
-        current_identity = (int(current_stat.st_dev), int(current_stat.st_ino), int(current_stat.st_mode))
-        if current_identity != tuple(int(value) for value in expected_identity):
-            return False, "the path changed since it was scanned; rescan before cleanup"
+    if not matches_scanned_identity(node, current_stat):
+        return False, "the path changed since it was scanned; rescan before cleanup"
     if resolved == Path("/") or resolved == Path.home().resolve():
         return False, "the filesystem root and home directory are protected"
     if node.get("kind") == "folder" and node.get("parent_id") is None:
@@ -453,11 +467,8 @@ def move_to_trash(
     if source.is_symlink():
         raise ValueError("symbolic links cannot be moved through the cleanup workflow")
     current_stat = source.lstat()
-    expected_identity = tuple((node or {}).get(key) for key in ("_stat_device", "_stat_inode", "_stat_mode"))
-    if all(value is not None for value in expected_identity):
-        current_identity = (int(current_stat.st_dev), int(current_stat.st_ino), int(current_stat.st_mode))
-        if current_identity != tuple(int(value) for value in expected_identity):
-            raise ValueError("the path changed since it was scanned; rescan before cleanup")
+    if node and not matches_scanned_identity(node, current_stat):
+        raise ValueError("the path changed since it was scanned; rescan before cleanup")
     resolved = source.resolve()
     if resolved == Path("/") or resolved == Path.home().resolve():
         raise ValueError("the filesystem root and home directory cannot be moved to Trash")

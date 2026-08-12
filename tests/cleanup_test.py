@@ -113,6 +113,11 @@ def main() -> int:
                 _stat_device=original_stat.st_dev,
                 _stat_inode=original_stat.st_ino,
                 _stat_mode=original_stat.st_mode,
+                _stat_ctime_ns=getattr(
+                    original_stat,
+                    "st_ctime_ns",
+                    int(original_stat.st_ctime * 1_000_000_000),
+                ),
             )
             original.unlink()
             original.write_text("replacement\n", encoding="utf-8")
