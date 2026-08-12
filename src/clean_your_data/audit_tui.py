@@ -7,15 +7,18 @@ import curses
 import json
 import os
 import queue
-import shlex
 import shutil
+import stat as stat_module
 import subprocess
 import sys
 import threading
 import textwrap
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Callable, Optional
+
+from .ai_config import resolve_ai_command as resolve_configured_ai_command
 
 
 DEFAULT_QUESTION = "What is this area likely used for, and what should I check before changing it?"
@@ -29,6 +32,9 @@ CLEANUP_HISTORY_FILE = "cleanup-history.json"
 WORKSPACE_STATE_FILE = "workspace-state.json"
 LARGE_FILTER_BYTES = 100 * 1024 * 1024
 RECENT_FILTER_SECONDS = 7 * 24 * 60 * 60
+REBUILDABLE_NAMES = {"node_modules", ".venv", "venv", "build", "dist", ".next", "target", "__pycache__"}
+PROTECTED_CLEANUP_PARTS = {".git", ".hg", ".svn", ".ssh", ".gnupg", ".aws", ".kube"}
+PROTECTED_CLEANUP_FILES = {".env", ".env.local", ".netrc", ".npmrc", ".pypirc"}
 FILTER_OPTIONS = (
     ("all", "All visible areas"),
     ("folders", "Folders only"),
@@ -130,6 +136,39 @@ def display_size(node: dict[str, Any]) -> str:
     return str(node.get("human_size") or "Not available")
 
 
+def node_bytes(node: dict[str, Any]) -> int:
+    try:
+        return max(0, int(node.get("allocated_bytes") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def is_rebuildable_node(node: dict[str, Any]) -> bool:
+    return node.get("category") == "cache" or str(node.get("name") or "") in REBUILDABLE_NAMES
+
+
+def size_bar(node: dict[str, Any], siblings: list[dict[str, Any]], width: int = 9) -> str:
+    """Render a compact relative-size signal for a tree row."""
+    width = max(1, width)
+    largest = max((node_bytes(item) for item in siblings), default=0)
+    value = node_bytes(node)
+    if largest <= 0 or value <= 0:
+        return "." * width
+    filled = max(1, round(width * value / largest))
+    return "#" * min(width, filled) + "." * max(0, width - filled)
+
+
+def space_summary(state: Any) -> str:
+    nodes = list(getattr(state, "nodes", []) or [])
+    root = next((node for node in nodes if node.get("parent_id") is None), None)
+    folders = sum(1 for node in nodes if node.get("kind") == "folder")
+    files = sum(1 for node in nodes if node.get("kind") == "file")
+    rebuildable = sum(1 for node in nodes if is_rebuildable_node(node))
+    staged = len(getattr(state, "cleanup_queue", {}) or {})
+    total = display_size(root) if root else "Not available"
+    return f"SUMMARY  {total} total  |  {folders} folders  |  {files} files  |  {rebuildable} rebuildable  |  {staged} staged"
+
+
 def display_node_name(node: dict[str, Any]) -> str:
     name = str(node.get("name") or node.get("path") or "unnamed")
     return f"{name}/" if node.get("kind") == "folder" and not name.endswith("/") else name
@@ -153,9 +192,18 @@ def sensitive_preview_path(path: Path) -> bool:
         "id_rsa",
         "id_ed25519",
         "known_hosts",
+        ".netrc",
+        ".npmrc",
+        ".pypirc",
     }
     sensitive_suffixes = (".pem", ".key", ".p12", ".pfx", ".kdbx")
-    return name in sensitive_names or name.endswith(sensitive_suffixes)
+    protected_parents = {".git", ".hg", ".svn", ".ssh", ".gnupg", ".aws", ".kube"}
+    return (
+        name in sensitive_names
+        or name.startswith(".env.")
+        or name.endswith(sensitive_suffixes)
+        or any(part.lower() in protected_parents for part in path.parts)
+    )
 
 
 def read_file_preview(node: dict[str, Any]) -> list[str]:
@@ -166,11 +214,24 @@ def read_file_preview(node: dict[str, Any]) -> list[str]:
     path = Path(str(local_path))
     if sensitive_preview_path(path):
         return ["Preview hidden because this filename may contain credentials or private configuration."]
+    descriptor: Optional[int] = None
     try:
-        with path.open("rb") as handle:
-            data = handle.read(PREVIEW_MAX_BYTES + 1)
-    except OSError as exc:
-        return [f"Preview unavailable: {exc}"]
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        current_stat = os.fstat(descriptor)
+        if not matches_scanned_identity(node, current_stat):
+            return ["Preview unavailable because this file changed after the scan. Rescan before opening it."]
+        if not stat_module.S_ISREG(current_stat.st_mode):
+            return ["Preview unavailable because this path is not a regular file."]
+        data = os.read(descriptor, PREVIEW_MAX_BYTES + 1)
+    except OSError:
+        return ["Preview unavailable because this path could not be read."]
+    finally:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
     if b"\x00" in data[:PREVIEW_MAX_BYTES]:
         return ["Binary file; text preview is unavailable."]
     truncated = len(data) > PREVIEW_MAX_BYTES
@@ -210,11 +271,31 @@ def local_node_path(node: dict[str, Any]) -> Optional[Path]:
     return Path(str(local_path)).expanduser()
 
 
+def matches_scanned_identity(node: dict[str, Any], current_stat: os.stat_result) -> bool:
+    """Reject object replacement while accepting older nodes without ctime metadata."""
+    expected_basic = (node.get("_stat_device"), node.get("_stat_inode"), node.get("_stat_mode"))
+    if not all(value is not None for value in expected_basic):
+        return True
+    try:
+        current_basic = (int(current_stat.st_dev), int(current_stat.st_ino), int(current_stat.st_mode))
+        if current_basic != tuple(int(value) for value in expected_basic):
+            return False
+        expected_ctime = node.get("_stat_ctime_ns")
+        if expected_ctime is None:
+            return True
+        current_ctime = int(
+            getattr(current_stat, "st_ctime_ns", int(current_stat.st_ctime * 1_000_000_000))
+        )
+        return current_ctime == int(expected_ctime)
+    except (TypeError, ValueError):
+        return False
+
+
 def path_is_within(path: Path, parent: Path) -> bool:
     try:
         path.resolve().relative_to(parent.resolve())
         return True
-    except ValueError:
+    except (OSError, RuntimeError, ValueError):
         return False
 
 
@@ -246,14 +327,26 @@ def cleanup_gate(node: dict[str, Any]) -> tuple[bool, str]:
         return False, "the local path is unavailable in this TUI session"
     try:
         resolved = path.resolve()
-    except OSError as exc:
-        return False, f"the path could not be resolved ({exc})"
+    except (OSError, RuntimeError):
+        return False, "the path could not be resolved"
     if not resolved.exists():
         return False, "the path no longer exists"
+    try:
+        current_stat = path.lstat()
+    except OSError:
+        return False, "the path could not be inspected again"
+    if not matches_scanned_identity(node, current_stat):
+        return False, "the path changed since it was scanned; rescan before cleanup"
     if resolved == Path("/") or resolved == Path.home().resolve():
         return False, "the filesystem root and home directory are protected"
+    if node.get("kind") == "folder" and node.get("parent_id") is None:
+        return False, "the active explorer scope is protected"
     if resolved == (Path.home() / ".Trash").resolve() or path_is_within(resolved, Path.home() / ".Trash"):
         return False, "the system Trash is protected"
+    if any(part in PROTECTED_CLEANUP_PARTS for part in resolved.parts):
+        return False, "version-control or credential storage is protected"
+    if resolved.name in PROTECTED_CLEANUP_FILES or resolved.name.startswith(".env."):
+        return False, "credential configuration is protected"
     if str(node.get("measurement_status") or "unknown") != "measured":
         return False, "the initial scan did not measure this path completely"
     category = str(node.get("category") or "unknown")
@@ -326,6 +419,10 @@ def load_cleanup_history(history_path: Optional[Path] = None) -> list[dict[str, 
 def save_cleanup_history(history: list[dict[str, Any]], history_path: Optional[Path] = None) -> None:
     path = history_path or cleanup_history_path()
     path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(path.parent, 0o700)
+    except OSError:
+        pass
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
     try:
@@ -367,6 +464,11 @@ def move_to_trash(
     source = path.expanduser()
     if not source.exists():
         raise FileNotFoundError(f"path no longer exists: {source}")
+    if source.is_symlink():
+        raise ValueError("symbolic links cannot be moved through the cleanup workflow")
+    current_stat = source.lstat()
+    if node and not matches_scanned_identity(node, current_stat):
+        raise ValueError("the path changed since it was scanned; rescan before cleanup")
     resolved = source.resolve()
     if resolved == Path("/") or resolved == Path.home().resolve():
         raise ValueError("the filesystem root and home directory cannot be moved to Trash")
@@ -377,7 +479,7 @@ def move_to_trash(
     destination = unique_trash_destination(root, source)
     shutil.move(str(source), str(destination))
     record = {
-        "record_id": f"cleanup-{int(time.time() * 1000)}",
+        "record_id": f"cleanup-{time.time_ns()}-{uuid.uuid4().hex[:8]}",
         "original_path": str(resolved),
         "trash_path": str(destination.resolve()),
         "name": source.name,
@@ -421,7 +523,16 @@ def restore_trash_record(record: dict[str, Any], history_path: Optional[Path] = 
             break
     else:
         history.append(record)
-    save_cleanup_history(history, history_path)
+    try:
+        save_cleanup_history(history, history_path)
+    except OSError as exc:
+        try:
+            shutil.move(str(original), str(destination))
+        except OSError as rollback_exc:
+            raise RuntimeError(
+                f"restored the Trash item but could not save history ({exc}); rollback failed ({rollback_exc})"
+            ) from exc
+        raise RuntimeError(f"could not save restore history; the restore was rolled back ({exc})") from exc
     return record
 
 
@@ -461,6 +572,10 @@ def load_workspace_state(state_path: Optional[Path] = None) -> dict[str, Any]:
 def save_workspace_state(state: dict[str, Any], state_path: Optional[Path] = None) -> None:
     path = state_path or workspace_state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(path.parent, 0o700)
+    except OSError:
+        pass
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
     try:
@@ -649,34 +764,9 @@ def analyze_path_relationships(
     }
 
 
-def resolve_ai_command() -> tuple[Optional[list[str]], str]:
-    """Prefer an explicit command, otherwise use a read-only ephemeral Codex CLI."""
-    configured = os.environ.get("CLEAN_YOUR_DATA_AI_COMMAND", "").strip()
-    if configured:
-        try:
-            command = shlex.split(configured)
-        except ValueError:
-            return None, "Configured local AI command is invalid."
-        return (command or None), "Configured local AI"
-    codex = shutil.which("codex")
-    if codex:
-        return (
-            [
-                codex,
-                "exec",
-                "--sandbox",
-                "read-only",
-                "--ephemeral",
-                "--skip-git-repo-check",
-                "--color",
-                "never",
-                "-C",
-                "/tmp",
-                "-",
-            ],
-            "Codex",
-        )
-    return None, "No local AI command"
+def resolve_ai_command(config_path: Optional[Path] = None) -> tuple[Optional[list[str]], str]:
+    """Use the shared, shell-free AI provider configuration."""
+    return resolve_configured_ai_command(config_path)
 
 
 def build_prompt(node: dict[str, Any], question: str = DEFAULT_QUESTION) -> str:
@@ -692,6 +782,7 @@ def build_prompt(node: dict[str, Any], question: str = DEFAULT_QUESTION) -> str:
             f"Size: {node.get('human_size') or 'unknown'}",
             f"Last changed: {display_date(node.get('modified_at'))}",
             f"Area: {node.get('area') or 'unknown'}",
+            f"Category: {node.get('category') or 'unknown'}",
             f"Measurement: {node.get('measurement_status') or 'unknown'}",
             "",
             f"My question: {question.strip() or DEFAULT_QUESTION}",
@@ -856,9 +947,13 @@ def copy_to_clipboard(value: str) -> str:
     return "Clipboard access failed. Press A to ask Codex or copy the context manually."
 
 
-def ask_local_ai(prompt: str, cancel_event: Optional[threading.Event] = None) -> tuple[Optional[str], str]:
+def ask_local_ai(
+    prompt: str,
+    cancel_event: Optional[threading.Event] = None,
+    config_path: Optional[Path] = None,
+) -> tuple[Optional[str], str]:
     """Call the configured local AI, or a read-only ephemeral Codex CLI when available."""
-    command, provider = resolve_ai_command()
+    command, provider = resolve_ai_command(config_path)
     if not command:
         return None, f"{provider} Press C to copy the metadata-only context."
     process: Optional[subprocess.Popen[str]] = None
@@ -876,16 +971,15 @@ def ask_local_ai(prompt: str, cancel_event: Optional[threading.Event] = None) ->
                 process.communicate()
                 return None, f"{provider} timed out. Press C to copy the context."
             try:
-                stdout, stderr = process.communicate(input=prompt if not sent_input else None, timeout=0.2)
+                stdout, _stderr = process.communicate(input=prompt if not sent_input else None, timeout=0.2)
                 break
             except subprocess.TimeoutExpired:
                 sent_input = True
                 continue
-    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
-        return None, f"{provider} did not answer: {exc}. Press C to copy the context."
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None, f"{provider} could not be started. Check its local configuration, then try again."
     if process.returncode != 0:
-        detail = stderr.strip() or f"exit code {process.returncode}"
-        return None, f"{provider} failed: {detail}. Press C to copy the context."
+        return None, f"{provider} exited with code {process.returncode}. Check that provider directly, then try again."
     answer = stdout.strip()
     if not answer:
         return None, f"{provider} returned no answer. Press C to copy the context."
@@ -1868,12 +1962,13 @@ def draw_header(stdscr: Any, state: TuiState, width: int) -> None:
     _, ai_label = resolve_ai_command()
     if state.ai_busy:
         ai_label = f"{ai_label} thinking {state.spinner()}"
-    add_text(stdscr, 0, 0, "CLEAN YOUR DATA / TERMINAL EXPLORER", width, curses.A_BOLD | palette("title"))
+    add_text(stdscr, 0, 0, "CLEAN YOUR DATA / SPACE MAP", width, curses.A_BOLD | palette("title"))
     add_text(stdscr, 1, 0, f"Tab: {state.tab_status()}  |  Scope: {scope}  |  Map: {status}  |  Decision: {gate}  |  AI: {ai_label}", width, palette("status"))
+    add_text(stdscr, 2, 0, space_summary(state), width, palette("answer"))
     search = state.search_query or "off"
-    add_text(stdscr, 2, 0, f"VIEW  Search: {search}  |  Filter: {state.filter_label()}  |  Sort: {state.sort_label()}", width, palette("status"))
-    add_text(stdscr, 3, 0, "MOVE j/k   ENTER open/close   / search   f filter   s sort   T tags   N new tab   ? help   q quit", width, palette("muted"))
-    add_text(stdscr, 4, 0, "-" * max(0, width), width, palette("rule"))
+    add_text(stdscr, 3, 0, f"VIEW  Search: {search}  |  Filter: {state.filter_label()}  |  Sort: {state.sort_label()}", width, palette("status"))
+    add_text(stdscr, 4, 0, "MOVE j/k   ENTER open   / search   A ask agent   dd review   ? help   q quit", width, palette("muted"))
+    add_text(stdscr, 5, 0, "SPACE MAP  # larger bars mean more space within this folder", width, palette("rule"))
 
 
 def draw_tree(stdscr: Any, state: TuiState, y: int, height: int, width: int) -> None:
@@ -1900,9 +1995,47 @@ def draw_tree(stdscr: Any, state: TuiState, y: int, height: int, width: int) -> 
         tagged = "@" if state.node_tags(node) else " "
         indent = "  " * min(int(node.get("depth") or 0), 8)
         name = display_node_name(node)
-        line = f"{selected}{basket}{tagged} {marker} {indent}{name}  {display_size(node)}"
+        siblings = by_parent.get(node.get("parent_id"), [node])
+        bar = size_bar(node, siblings)
+        line = f"{selected}{basket}{tagged} {marker} {indent}{name}  {bar} {display_size(node)}"
         attr = curses.A_BOLD | palette("selected") if selected == "*" else palette("basket") if basket == "+" else palette("folder") if node.get("kind") == "folder" else 0
         add_text(stdscr, y + row, 0, line, width, attr)
+
+
+def space_story_lines(state: TuiState, node: dict[str, Any], width: int) -> list[tuple[str, int]]:
+    children = [item for item in state.nodes if item.get("parent_id") == node.get("node_id")]
+    child_count = int(node.get("child_count") or len(children))
+    lines: list[tuple[str, int]] = [
+        (display_node_name(node), curses.A_BOLD | palette("folder")),
+        (f"{display_size(node)} across {child_count} immediate entr{'y' if child_count == 1 else 'ies'}.", 0),
+        ("", 0),
+        ("WHY THIS MATTERS", curses.A_BOLD | palette("title")),
+    ]
+    if children:
+        largest = max(children, key=node_bytes)
+        largest_size = node_bytes(largest)
+        total_size = node_bytes(node)
+        share = round(100 * largest_size / total_size) if total_size else 0
+        lines.append((f"Largest visible area: {display_node_name(largest)}  {display_size(largest)} ({share}%).", 0))
+        rebuildable = [item for item in children if is_rebuildable_node(item)]
+        if rebuildable:
+            candidate = max(rebuildable, key=node_bytes)
+            lines.append((f"Review candidate: {display_node_name(candidate)} looks rebuildable.", palette("answer")))
+        else:
+            lines.append(("No obvious rebuildable area is loaded yet.", curses.A_DIM | palette("muted")))
+    else:
+        lines.append(("The next level is ready to load on Enter.", curses.A_DIM | palette("muted")))
+    if is_rebuildable_node(node):
+        lines.append(("This selected area itself is marked rebuildable; check its owner first.", palette("answer")))
+    lines.extend(
+        [
+            ("", 0),
+            ("NEXT BEST MOVE", curses.A_BOLD | palette("title")),
+            ("A ask the local Agent for an explanation.", curses.A_DIM | palette("muted")),
+            ("Enter open or close this level; dd stages one exact path.", curses.A_DIM | palette("muted")),
+        ]
+    )
+    return [(wrap_line, attr) for text, attr in lines for wrap_line in wrap_lines(text, max(10, width))]
 
 
 def inspector_lines(state: TuiState, width: int) -> list[tuple[str, int]]:
@@ -1977,28 +2110,13 @@ def inspector_lines(state: TuiState, width: int) -> list[tuple[str, int]]:
             ]
         )
     else:
-        lines = [
-            *cleanup_lines,
-            ("ABOUT THIS AREA", curses.A_BOLD | palette("title")),
-            (display_node_name(node), curses.A_BOLD | palette("folder")),
-            (f"Path: {display_node_path(node)}", curses.A_DIM),
-            (f"Space: {display_size(node)}", 0),
-            (f"Last changed: {display_date(node.get('modified_at'))}", 0),
-            ("Kind: Folder", 0),
-            (f"Area: {display_label(node.get('area') or 'unknown scope')}", 0),
-            (f"Measurement: {display_label(node.get('measurement_status') or 'unknown')}", 0),
-            ("", 0),
-            ("WHAT WE KNOW", curses.A_BOLD | palette("title")),
-        ]
-        explanation = "We checked this folder's name, size, dates, and visible entries. We did not open file contents, so its exact purpose is not confirmed."
-        lines.extend([("", 0)])
-        for line in wrap_lines(explanation, max(10, width)):
-            lines.append((line, curses.A_DIM | palette("muted")))
+        lines = [*space_story_lines(state, node, width), *cleanup_lines]
         lines.extend(
             [
-                ("", 0),
-                ("NEXT STEP", curses.A_BOLD | palette("title")),
-                ("Press A to ask Codex what this area is likely for.", curses.A_DIM | palette("muted")),
+                ("PATH", curses.A_BOLD | palette("title")),
+                (f"{display_node_path(node)}", curses.A_DIM),
+                (f"Last changed: {display_date(node.get('modified_at'))}", curses.A_DIM),
+                (f"Measurement: {display_label(node.get('measurement_status') or 'unknown')}", curses.A_DIM),
             ]
         )
     if state.ai_busy and state.ai_busy_node_id == node_id:
@@ -2024,7 +2142,9 @@ def inspector_lines(state: TuiState, width: int) -> list[tuple[str, int]]:
 
 
 def draw_inspector(stdscr: Any, state: TuiState, y: int, height: int, x: int, width: int) -> None:
-    add_text(stdscr, y, x, "INSPECTOR", width, curses.A_BOLD | palette("title"))
+    selected = state.selected()
+    heading = "SPACE STORY" if selected and selected.get("kind") == "folder" else "FILE PREVIEW"
+    add_text(stdscr, y, x, heading, width, curses.A_BOLD | palette("title"))
     current_y = y + 1
     for text, attr in inspector_lines(state, width)[: max(0, height - 1)]:
         add_text(stdscr, current_y, x, text, width, attr)

@@ -9,17 +9,24 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from importlib import resources
 from pathlib import Path
+from typing import Optional
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 
 
-def run_module(*args: str) -> subprocess.CompletedProcess[str]:
+def run_module(
+    *args: str,
+    env_overrides: Optional[dict[str, str]] = None,
+) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     existing = env.get("PYTHONPATH")
     env["PYTHONPATH"] = str(SRC) + (os.pathsep + existing if existing else "")
+    if env_overrides:
+        env.update(env_overrides)
     return subprocess.run(
         [sys.executable, "-m", "clean_your_data", *args],
         cwd=ROOT,
@@ -35,7 +42,8 @@ def main() -> int:
     from clean_your_data import __version__
     from clean_your_data.cli import normalize_argv
 
-    assert __version__ == "0.3.0"
+    assert __version__ == "0.4.0"
+    assert resources.files("clean_your_data").joinpath("web/index.html").is_file()
     assert normalize_argv([]) == ["--tui", "--path", "."]
     assert normalize_argv(["/tmp/project", "--focus-depth", "3"]) == [
         "--tui",
@@ -48,7 +56,23 @@ def main() -> int:
 
     version = run_module("--version")
     assert version.returncode == 0, version.stderr
-    assert version.stdout.strip() == "clean-your-data 0.3.0"
+    assert version.stdout.strip() == "clean-your-data 0.4.0"
+
+    gui_help = run_module("gui", "--help")
+    assert gui_help.returncode == 0, gui_help.stderr
+    assert "cyd gui" in gui_help.stdout
+
+    with tempfile.TemporaryDirectory() as state_dir:
+        invalid_config = run_module(
+            "config",
+            "ai",
+            "--command",
+            "'unterminated",
+            env_overrides={"CLEAN_YOUR_DATA_STATE_DIR": state_dir},
+        )
+        assert invalid_config.returncode == 2
+        assert "invalid AI command" in invalid_config.stderr
+        assert "Traceback" not in invalid_config.stderr
 
     installed_command = shutil.which("cyd")
     if installed_command:
@@ -59,7 +83,7 @@ def main() -> int:
             check=False,
         )
         assert installed_version.returncode == 0, installed_version.stderr
-        assert installed_version.stdout.strip() == "clean-your-data 0.3.0"
+        assert installed_version.stdout.strip() == "clean-your-data 0.4.0"
 
     with tempfile.TemporaryDirectory() as tmp:
         home = Path(tmp)
