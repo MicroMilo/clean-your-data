@@ -29,20 +29,36 @@ Both screenshots use a synthetic project. No home directory, username, or privat
 
 ## Run It
 
+For Codex, send these as two messages. A newly installed Skill becomes available on the next turn.
+
+> Install the `clean-your-data` Skill from `https://github.com/MicroMilo/clean-your-data/tree/v0.5.0/skills/clean-your-data`.
+
+Then send:
+
+> Use `$clean-your-data` to explain `PATH` read-only: likely source, evidence, impact if moved, unknowns, and the safest next check.
+
+The Skill installs or runs `cyd` locally and starts with a stable metadata-only evidence packet:
+
+```bash
+cyd why PATH --format json
+```
+
+No file contents are sent to the Agent by this command, and its answer cannot authorize a move.
+
 With [`uv`](https://docs.astral.sh/uv/) installed, no checkout or permanent install is required:
 
 ```bash
 # Terminal workspace
-uvx --from git+https://github.com/MicroMilo/clean-your-data.git cyd .
+uvx --from git+https://github.com/MicroMilo/clean-your-data.git@v0.5.0 cyd .
 
 # Browser workspace
-uvx --from git+https://github.com/MicroMilo/clean-your-data.git cyd gui .
+uvx --from git+https://github.com/MicroMilo/clean-your-data.git@v0.5.0 cyd gui .
 ```
 
 Install `cyd` once when you want it everywhere:
 
 ```bash
-uv tool install git+https://github.com/MicroMilo/clean-your-data.git
+uv tool install --force git+https://github.com/MicroMilo/clean-your-data.git@v0.5.0
 cyd ~/Documents/project          # TUI
 cyd gui ~/Documents/project      # GUI
 ```
@@ -77,23 +93,21 @@ cyd config ai --off
 
 The Agent receives bounded metadata, not the selected file preview or file body. Its answer is advice and cannot bypass cleanup gates. Custom providers are executed as direct arguments, never through a shell.
 
-You can also give this repository URL to an Agent and say:
-
-> Install Clean Your Data, inspect `PATH` read-only, explain the largest branches and likely owners, and do not move anything without my exact approval.
-
 ## Safety Contract
 
 - Initial scans are local, metadata-first, and make no network request.
 - Sensitive names and binary files are excluded from preview; ordinary previews remain local and never enter the Agent prompt.
 - Cleanup never permanently deletes: only an exact confirmed path moves to system Trash, with undo when restoration remains safe.
+- Git-tracked paths are blocked from Trash review; use Git to manage them.
 - Reports redact the home directory to `~` by default, but you should still review project and folder names before sharing.
+- Installing the Skill or package uses the network and writes to the Agent's Skill directory or the package runner's cache; local scans themselves make no network request.
 
 Configured Agent commands follow their own network and credential policies. Read [Privacy](PRIVACY.md) and [Security](SECURITY.md) for the complete boundary.
 
 ## More
 
-[Usage and controls](docs/USAGE.md) · [Chinese README](README.zh-CN.md) · [Sample report](examples/sample-report.md) · [Agent handoff](examples/agent-handoff.md) · [Changelog](CHANGELOG.md)
+[Agent Skill](skills/clean-your-data/SKILL.md) · [Usage and controls](docs/USAGE.md) · [Chinese README](README.zh-CN.md) · [Changelog](CHANGELOG.md)
 
-Clean Your Data is beta software. `v0.4.0` includes the GUI, keyboard-first TUI, optional Agent integration, reversible cleanup, duplicate detection, report comparison, and opt-in Agent tracing.
+Clean Your Data is beta software. `v0.5.0` adds the installable Agent Skill and the shared `cyd why` evidence interface to the GUI, TUI, tracing, reversible cleanup, and duplicate-detection foundation.
 
 MIT licensed. See [LICENSE](LICENSE).

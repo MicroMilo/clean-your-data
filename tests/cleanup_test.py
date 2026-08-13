@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import tempfile
+import subprocess
 import time
 from pathlib import Path
 
@@ -100,6 +101,29 @@ def main() -> int:
             production_env.write_text("TOKEN=fixture\n", encoding="utf-8")
             production_env_node = dict(env_node, name=production_env.name, _local_path=str(production_env))
             assert tui.cleanup_gate(production_env_node)[0] is False
+
+            repository = root / "repository"
+            repository.mkdir()
+            tracked_file = repository / "tracked.txt"
+            tracked_file.write_text("tracked\n", encoding="utf-8")
+            git_init = subprocess.run(["git", "init", "-q", str(repository)], capture_output=True, text=True, check=False)
+            assert git_init.returncode == 0, git_init.stderr
+            git_add = subprocess.run(["git", "-C", str(repository), "add", "tracked.txt"], capture_output=True, text=True, check=False)
+            assert git_add.returncode == 0, git_add.stderr
+            tracked_stat = tracked_file.lstat()
+            tracked_node = dict(
+                node,
+                node_id="tracked-file",
+                name="tracked.txt",
+                path="~/workspace/repository/tracked.txt",
+                _local_path=str(tracked_file),
+                _stat_device=int(tracked_stat.st_dev),
+                _stat_inode=int(tracked_stat.st_ino),
+                _stat_mode=int(tracked_stat.st_mode),
+                _stat_ctime_ns=int(tracked_stat.st_ctime_ns),
+            )
+            assert tui.cleanup_gate(tracked_node)[0] is False
+            assert "tracked by Git" in tui.cleanup_gate(tracked_node)[1]
             assert "preliminary" in tui.cleanup_prompt(node).lower()
 
             original = root / "replace-me.txt"

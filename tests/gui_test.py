@@ -119,6 +119,8 @@ def main() -> int:
 
             answer = session.ask(readme_node["node_id"], "What is this?")
             assert "What is this?" in answer["answer"]
+            assert "LOCAL EVIDENCE PACKET" in answer["answer"]
+            assert '"likely_source"' in answer["answer"]
             assert "private preview marker" not in answer["answer"]
 
             os.environ.pop("CLEAN_YOUR_DATA_AI_COMMAND", None)

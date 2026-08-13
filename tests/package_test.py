@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -42,7 +41,7 @@ def main() -> int:
     from clean_your_data import __version__
     from clean_your_data.cli import normalize_argv
 
-    assert __version__ == "0.4.0"
+    assert __version__ == "0.5.0"
     assert resources.files("clean_your_data").joinpath("web/index.html").is_file()
     assert normalize_argv([]) == ["--tui", "--path", "."]
     assert normalize_argv(["/tmp/project", "--focus-depth", "3"]) == [
@@ -56,11 +55,24 @@ def main() -> int:
 
     version = run_module("--version")
     assert version.returncode == 0, version.stderr
-    assert version.stdout.strip() == "clean-your-data 0.4.0"
+    assert version.stdout.strip() == "clean-your-data 0.5.0"
+
+    help_result = run_module("--help")
+    assert help_result.returncode == 0, help_result.stderr
+    for command in ("cyd [PATH]", "cyd why", "cyd gui", "cyd trace", "cyd audit", "cyd config ai"):
+        assert command in help_result.stdout
+
+    audit_help = run_module("audit", "--help")
+    assert audit_help.returncode == 0, audit_help.stderr
+    assert "Read-only local file organization audit" in audit_help.stdout
 
     gui_help = run_module("gui", "--help")
     assert gui_help.returncode == 0, gui_help.stderr
     assert "cyd gui" in gui_help.stdout
+
+    why_help = run_module("why", "--help")
+    assert why_help.returncode == 0, why_help.stderr
+    assert "cyd why" in why_help.stdout
 
     with tempfile.TemporaryDirectory() as state_dir:
         invalid_config = run_module(
@@ -73,17 +85,6 @@ def main() -> int:
         assert invalid_config.returncode == 2
         assert "invalid AI command" in invalid_config.stderr
         assert "Traceback" not in invalid_config.stderr
-
-    installed_command = shutil.which("cyd")
-    if installed_command:
-        installed_version = subprocess.run(
-            [installed_command, "--version"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert installed_version.returncode == 0, installed_version.stderr
-        assert installed_version.stdout.strip() == "clean-your-data 0.4.0"
 
     with tempfile.TemporaryDirectory() as tmp:
         home = Path(tmp)

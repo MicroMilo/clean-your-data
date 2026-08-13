@@ -1,6 +1,6 @@
 interface:
-  display_name: "Clean Your Data"
-  short_description: "Map local data and review reversible cleanup"
-  default_prompt: "Use $audit-local-files to map my local data, separate scan evidence from agent advice, and propose exact reversible cleanup candidates. Never move anything without my confirmation."
+  display_name: "Clean Your Data: Full Audit"
+  short_description: "Run the legacy machine-wide storage audit"
+  default_prompt: "Use $audit-local-files to create a redacted, read-only machine-wide storage report."
 policy:
-  allow_implicit_invocation: true
+  allow_implicit_invocation: false

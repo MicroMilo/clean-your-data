@@ -21,7 +21,7 @@ from typing import Any, Callable, Optional
 from .ai_config import resolve_ai_command as resolve_configured_ai_command
 
 
-DEFAULT_QUESTION = "What is this area likely used for, and what should I check before changing it?"
+DEFAULT_QUESTION = "Why is this here, who likely created it, and what could break if I move it?"
 INITIAL_TREE_LEVELS = 3
 SPINNER_FRAMES = ("|", "/", "-", "\\")
 PREVIEW_MAX_BYTES = 4096
@@ -320,7 +320,39 @@ def preliminary_cleanup_advice(node: dict[str, Any]) -> str:
     return f"Preliminary scan: the purpose of this {kind} is not confirmed. Review more evidence before moving it."
 
 
-def cleanup_gate(node: dict[str, Any]) -> tuple[bool, str]:
+def git_tracked_path(path: Path) -> tuple[Optional[bool], str]:
+    """Check the Git index only; do not inspect working-tree file contents."""
+    if not shutil.which("git"):
+        return None, "Git is unavailable"
+    start = path if path.is_dir() else path.parent
+    root: Optional[Path] = None
+    for candidate in (start, *start.parents):
+        try:
+            marker = (candidate / ".git").lstat()
+        except OSError:
+            continue
+        if stat_module.S_ISDIR(marker.st_mode) or stat_module.S_ISREG(marker.st_mode):
+            root = candidate
+            break
+    if root is None:
+        return False, "outside a Git working tree"
+    try:
+        relative = str(path.relative_to(root))
+        result = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "--error-unmatch", "--", relative],
+            capture_output=True,
+            text=True,
+            timeout=4,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return None, "Git index check failed"
+    if result.returncode == 0 and result.stdout.strip():
+        return True, "the path is tracked by Git or contains tracked files"
+    return False, "the path is not tracked by Git"
+
+
+def cleanup_gate(node: dict[str, Any], *, check_git: bool = True) -> tuple[bool, str]:
     """Apply deterministic local guardrails before any user-approved Trash move."""
     path = local_node_path(node)
     if path is None:
@@ -347,6 +379,14 @@ def cleanup_gate(node: dict[str, Any]) -> tuple[bool, str]:
         return False, "version-control or credential storage is protected"
     if resolved.name in PROTECTED_CLEANUP_FILES or resolved.name.startswith(".env."):
         return False, "credential configuration is protected"
+    if check_git:
+        tracked, git_reason = git_tracked_path(resolved)
+        if tracked is True:
+            return False, git_reason
+        if tracked is None:
+            start = resolved if resolved.is_dir() else resolved.parent
+            if any((candidate / ".git").exists() for candidate in (start, *start.parents)):
+                return False, git_reason
     if str(node.get("measurement_status") or "unknown") != "measured":
         return False, "the initial scan did not measure this path completely"
     category = str(node.get("category") or "unknown")
@@ -391,7 +431,7 @@ def cleanup_prompt(node: dict[str, Any]) -> str:
             f"Area: {node.get('area') or 'unknown'}",
             f"Category: {node.get('category') or 'unknown'}",
             f"Measurement: {node.get('measurement_status') or 'unknown'}",
-            f"Visible child count: {node.get('child_count', 'unknown')}",
+            f"Visible child count: {node.get('child_count', 'unknown')}{'+' if node.get('child_count_limited') else ''}",
             "",
             "Remember: your answer is advice attached to a cleanup candidate. It is not an approval and must not trigger an action.",
         ]
@@ -712,10 +752,10 @@ def analyze_path_relationships(
                 break
             file_path = current_path / filename
             try:
-                stat_result = file_path.stat()
+                stat_result = file_path.lstat()
             except OSError:
                 continue
-            if not file_path.is_file():
+            if stat_module.S_ISLNK(stat_result.st_mode) or not stat_module.S_ISREG(stat_result.st_mode):
                 continue
             relative = str(file_path.relative_to(root))
             size = int(stat_result.st_size)
@@ -769,27 +809,90 @@ def resolve_ai_command(config_path: Optional[Path] = None) -> tuple[Optional[lis
     return resolve_configured_ai_command(config_path)
 
 
-def build_prompt(node: dict[str, Any], question: str = DEFAULT_QUESTION) -> str:
+def build_prompt(
+    node: dict[str, Any],
+    question: str = DEFAULT_QUESTION,
+    evidence_packet: Optional[dict[str, Any]] = None,
+) -> str:
     """Build the exact metadata-only context used by the optional AI command."""
-    return "\n".join(
+    lines = [
+        "Please help me understand this area of my local computer using only the metadata below.",
+        "Do not ask me to upload or open file contents unless I explicitly approve it.",
+        "",
+        f"Path: {node.get('path', 'unknown')}",
+        f"Name: {node.get('name', 'unknown')}",
+        f"Kind: {'folder' if node.get('kind') == 'folder' else 'file'}",
+        f"Size: {node.get('human_size') or 'unknown'}",
+        f"Last changed: {display_date(node.get('modified_at'))}",
+        f"Area: {node.get('area') or 'unknown'}",
+        f"Category: {node.get('category') or 'unknown'}",
+        f"Measurement: {node.get('measurement_status') or 'unknown'}",
+    ]
+    if evidence_packet:
+        lines.extend(
+            [
+                "",
+                "LOCAL EVIDENCE PACKET",
+                json.dumps(evidence_packet, ensure_ascii=False, separators=(",", ":")),
+            ]
+        )
+    lines.extend(
         [
-            "Please help me understand this area of my local computer using only the metadata below.",
-            "Do not ask me to upload or open file contents unless I explicitly approve it.",
-            "",
-            f"Path: {node.get('path', 'unknown')}",
-            f"Name: {node.get('name', 'unknown')}",
-            f"Kind: {'folder' if node.get('kind') == 'folder' else 'file'}",
-            f"Size: {node.get('human_size') or 'unknown'}",
-            f"Last changed: {display_date(node.get('modified_at'))}",
-            f"Area: {node.get('area') or 'unknown'}",
-            f"Category: {node.get('category') or 'unknown'}",
-            f"Measurement: {node.get('measurement_status') or 'unknown'}",
             "",
             f"My question: {question.strip() or DEFAULT_QUESTION}",
             "",
-            "Please answer in the same language as my question and use plain language: what this area is likely used for, what evidence supports that, what remains unknown, and the safest next check. Do not recommend deleting anything merely because it is large.",
+            "Answer in the same language as my question and use exactly these plain-language sections:",
+            "LIKELY SOURCE",
+            "EVIDENCE",
+            "IMPACT IF MOVED",
+            "UNKNOWNS",
+            "SAFEST NEXT CHECK",
+            "Keep observed evidence separate from inference. Do not claim an exact creator without trace evidence, and do not recommend deleting anything merely because it is large.",
         ]
     )
+    return "\n".join(lines)
+
+
+def build_path_evidence_prompt(
+    node: dict[str, Any],
+    question: str = DEFAULT_QUESTION,
+    *,
+    home: Optional[Path] = None,
+) -> str:
+    """Add the bounded `cyd why` packet without blocking the UI thread."""
+    path = local_node_path(node)
+    if path is None:
+        return build_prompt(node, question)
+    try:
+        from .why import build_why_report
+
+        report = build_why_report(
+            path,
+            home=home,
+            max_files=1_000,
+            time_budget=3,
+        )
+    except Exception:
+        return build_prompt(node, question)
+    packet_keys = (
+        "why_schema_version",
+        "status",
+        "read_only",
+        "content_read",
+        "path",
+        "measurement",
+        "classification",
+        "likely_source",
+        "evidence",
+        "impact_if_moved",
+        "unknowns",
+        "safest_next_check",
+        "action_gate",
+        "analysis_scope",
+        "limits",
+    )
+    packet = {key: report[key] for key in packet_keys if key in report}
+    return build_prompt(node, question, packet)
 
 
 def children_by_parent(nodes: list[dict[str, Any]]) -> dict[Optional[str], list[dict[str, Any]]]:
@@ -995,8 +1098,10 @@ class TuiState:
         cleanup_history_file: Optional[Path] = None,
         cleanup_trash_root: Optional[Path] = None,
         workspace_file: Optional[Path] = None,
+        home: Optional[Path] = None,
     ):
         self.report = report
+        self.home = (home or Path.home()).expanduser().resolve()
         self.space_map = report.get("space_map") or {}
         self.nodes = list(self.space_map.get("nodes") or [])
         self.expand_callback = expand_callback
@@ -1415,7 +1520,13 @@ class TuiState:
             self.expanded.add(node_id)
             self.message = f"Opened {display_node_name(node)}"
 
-    def start_ai(self, node: dict[str, Any], prompt: str, kind: str = "question") -> bool:
+    def start_ai(
+        self,
+        node: dict[str, Any],
+        prompt: str,
+        kind: str = "question",
+        evidence_question: Optional[str] = None,
+    ) -> bool:
         if self.ai_busy:
             self.message = "Codex is already thinking. You can still move through the tree."
             return False
@@ -1436,7 +1547,14 @@ class TuiState:
             self.ai_messages_by_node[node_id] = "Codex is thinking..."
 
         def worker() -> None:
-            answer, message = ask_local_ai(prompt, cancel_event)
+            effective_prompt = prompt
+            if evidence_question is not None and not cancel_event.is_set():
+                effective_prompt = build_path_evidence_prompt(node, evidence_question, home=self.home)
+                self.prompts_by_node[node_id] = effective_prompt
+            if cancel_event.is_set():
+                self.ai_results.put((request_id, node_id, None, "Codex request cancelled.", kind))
+                return
+            answer, message = ask_local_ai(effective_prompt, cancel_event)
             self.ai_results.put((request_id, node_id, answer, message, kind))
 
         threading.Thread(target=worker, name="clean-your-data-codex", daemon=True).start()
@@ -2005,9 +2123,10 @@ def draw_tree(stdscr: Any, state: TuiState, y: int, height: int, width: int) -> 
 def space_story_lines(state: TuiState, node: dict[str, Any], width: int) -> list[tuple[str, int]]:
     children = [item for item in state.nodes if item.get("parent_id") == node.get("node_id")]
     child_count = int(node.get("child_count") or len(children))
+    child_count_text = f"{child_count}+" if node.get("child_count_limited") else str(child_count)
     lines: list[tuple[str, int]] = [
         (display_node_name(node), curses.A_BOLD | palette("folder")),
-        (f"{display_size(node)} across {child_count} immediate entr{'y' if child_count == 1 else 'ies'}.", 0),
+        (f"{display_size(node)} across {child_count_text} immediate entr{'y' if child_count == 1 and not node.get('child_count_limited') else 'ies'}.", 0),
         ("", 0),
         ("WHY THIS MATTERS", curses.A_BOLD | palette("title")),
     ]
@@ -2406,7 +2525,7 @@ def submit_question(stdscr: Any, state: TuiState) -> None:
         curses.curs_set(0)
     except curses.error:
         pass
-    state.start_ai(node, state.prompt)
+    state.start_ai(node, state.prompt, evidence_question=state.question)
 
 
 def cancel_question(stdscr: Any, state: TuiState) -> None:
@@ -2719,8 +2838,9 @@ def app(
     report: dict[str, Any],
     expand_callback: Optional[Callable[[dict[str, Any]], tuple[list[dict[str, Any]], str]]] = None,
     rescan_callback: Optional[Callable[[Optional[Path]], dict[str, Any]]] = None,
+    home: Optional[Path] = None,
 ) -> None:
-    state = TuiState(report, expand_callback, rescan_callback)
+    state = TuiState(report, expand_callback, rescan_callback, home=home)
     stdscr.keypad(True)
     stdscr.timeout(100)
     try:
@@ -2848,12 +2968,13 @@ def run_tui(
     report: dict[str, Any],
     expand_callback: Optional[Callable[[dict[str, Any]], tuple[list[dict[str, Any]], str]]] = None,
     rescan_callback: Optional[Callable[[Optional[Path]], dict[str, Any]]] = None,
+    home: Optional[Path] = None,
 ) -> int:
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         print("The terminal explorer needs an interactive terminal. Use --format json for a non-interactive report.", file=sys.stderr)
         return 2
     try:
-        curses.wrapper(app, report, expand_callback, rescan_callback)
+        curses.wrapper(app, report, expand_callback, rescan_callback, home)
     except KeyboardInterrupt:
         return 0
     return 0

@@ -2,6 +2,8 @@
 
 Clean Your Data is designed for local, metadata-first analysis. The bundled scanner and GUI server do not make network requests and do not upload reports. An agent may download this public repository, but the scan itself runs on the user's machine. The optional GUI/TUI cleanup loop can move an exact user-confirmed path to the local system Trash; that action and its undo record stay on the machine.
 
+Installing the Agent Skill or Python package requires network access and writes to the Agent's Skill directory, a package-tool environment, or a package runner cache. The Skill pins its fallback package command to a release tag and asks before that download. This installation traffic is separate from local scanning.
+
 ## Local Browser GUI
 
 - The GUI binds only to `127.0.0.1` on a random port by default.
@@ -34,6 +36,14 @@ Avoid sharing reports created with:
 - Known category labels such as `workspace`, `app-state`, `cloud-sync`, `cache`, and `inbox`.
 - Optional Git dirty-entry counts from `git status --porcelain`.
 
+## One-Path Explanations
+
+`cyd why PATH` creates a bounded, read-only evidence packet for one selected path. It may inspect names, directory shape, allocated size, timestamps, project-marker existence, Git index membership for a selected file, and local prospective trace records. It does not read the selected file body, parse project manifests, enumerate Git dirty state, or follow a selected symbolic-link target.
+
+Relationship traversal stays within the selected directory and reports its scope and counts. Ancestor lookup checks up to ten levels for project-marker names; it does not parse those marker files. Cleanup review may query the Git index for one selected path so tracked content can be blocked without reading working-tree file bodies.
+
+JSON and text output redact the configured home prefix to `~` and reduce paths outside that home to `<external>/NAME`. Project names and home-relative folder names can still be identifying. The command never moves a file and always returns `action_gate.authorizes_move` as `false`.
+
 ## Data The Scanner Should Not Collect
 
 - Message text.
@@ -49,7 +59,7 @@ AI is disabled or configured by the user. Clean Your Data can call an already au
 
 The opt-in tracer also stores the traced command and its arguments verbatim in the local `~/.clean-your-data/provenance.sqlite3` database. Do not put credentials directly in a traced command line. The state directory and database use user-only permissions where the operating system supports them.
 
-The stdin prompt constructed by Clean Your Data contains a redacted path, name, kind, size, modified time, category, and measurement status. Clean Your Data does not place the selected file preview or file contents in that prompt. The built-in Codex mode uses a read-only, ephemeral sandbox. A custom command still has its own operating-system permissions and may use its own network connection or credential store; configure only a trusted command and review that provider's privacy behavior separately.
+The stdin prompt constructed by Clean Your Data contains a redacted path, name, kind, size, modified time, category, measurement status, project-marker names, bounded relationship summaries, and any matching local prospective trace association. A trace association exposes the captured executable's basename, event type, and timestamps, but not its full command arguments. Clean Your Data does not place the selected file preview or file contents in that prompt. The built-in Codex mode uses a read-only, ephemeral sandbox. A custom command still has its own operating-system permissions and may use its own network connection or credential store; configure only a trusted command and review that provider's privacy behavior separately.
 
 ## Sharing Reports
 

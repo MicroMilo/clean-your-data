@@ -36,6 +36,7 @@ DUPLICATE_DEFAULT_TIME_BUDGET_SECONDS = 60
 DUPLICATE_DEFAULT_MAX_BYTES = 10 * 1024**3
 DUPLICATE_DEFAULT_FILE_LIMIT = 10000
 DUPLICATE_DEFAULT_MIN_BYTES = 1 * 1024**2
+SPACE_MAP_CHILD_COUNT_LIMIT = 1_000
 
 ARTIFACT_NAMES = {
     "node_modules": ("cache", "rebuildable", "reinstall dependencies"),
@@ -412,7 +413,9 @@ def bulk_du_sizes(root: Path, max_depth: int, timeout: int) -> dict[str, tuple[O
             timeout=command_timeout,
             check=False,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except subprocess.TimeoutExpired:
+        return {path_cache_key(root): (None, f"timed out after {timeout}s", True)}
+    except OSError:
         return {}
     if proc.returncode != 0:
         return {}
@@ -1315,6 +1318,25 @@ def scan_space_map(
     errors: list[str] = []
     status = "complete"
 
+    def bounded_child_count(path: Path) -> tuple[int, bool]:
+        count = 0
+        try:
+            with os.scandir(path) as entries:
+                for entry in entries:
+                    if budget_exhausted(deadline):
+                        return count, True
+                    try:
+                        if entry.is_symlink():
+                            continue
+                    except OSError:
+                        continue
+                    if count >= SPACE_MAP_CHILD_COUNT_LIMIT:
+                        return count, True
+                    count += 1
+        except OSError:
+            return 0, False
+        return count, False
+
     def report_error(path: Optional[Path], message: str) -> None:
         if len(errors) >= 20:
             return
@@ -1356,10 +1378,7 @@ def scan_space_map(
             status = "partial"
         is_directory = stat_module.S_ISDIR(path_stat.st_mode)
         context = context_for(path, root)
-        try:
-            child_count = len(list(path.iterdir())) if is_directory else 0
-        except OSError:
-            child_count = 0
+        child_count, child_count_limited = bounded_child_count(path) if is_directory else (0, False)
         node_id = stable_id("space", str(path.resolve()))
         node = {
             "node_id": node_id,
@@ -1378,6 +1397,7 @@ def scan_space_map(
             "measurement_error": sanitize_text(error, home, redact),
             "timed_out": timed_out,
             "child_count": child_count,
+            "child_count_limited": child_count_limited,
             # This remains true at the scan boundary so the TUI can load the
             # next level on demand instead of treating the boundary as a leaf.
             "can_expand": is_directory and child_count > 0,
@@ -1396,19 +1416,25 @@ def scan_space_map(
         may_descend = not should_skip_dir(path) or (allow_skipped_root and depth == 0)
         if depth >= max_depth or not node["can_expand"] or not may_descend:
             return
+        child_rows: list[tuple[Path, Optional[int], str, bool]] = []
         try:
-            children = [child for child in path.iterdir() if not child.is_symlink()]
+            with os.scandir(path) as entries:
+                for entry in entries:
+                    try:
+                        if entry.is_symlink():
+                            continue
+                    except OSError:
+                        continue
+                    if len(nodes) + len(child_rows) >= node_limit or budget_exhausted(deadline):
+                        status = "limit" if len(nodes) + len(child_rows) >= node_limit else "partial"
+                        break
+                    child = Path(entry.path)
+                    child_size, child_error, child_timed_out = size_for(child)
+                    child_rows.append((child, child_size, child_error, child_timed_out))
         except OSError as exc:
             status = "partial"
             report_error(path, str(exc))
             return
-        child_rows: list[tuple[Path, Optional[int], str, bool]] = []
-        for child in children:
-            if len(nodes) + len(child_rows) >= node_limit or budget_exhausted(deadline):
-                status = "limit" if len(nodes) + len(child_rows) >= node_limit else "partial"
-                break
-            child_size, child_error, child_timed_out = size_for(child)
-            child_rows.append((child, child_size, child_error, child_timed_out))
         child_rows.sort(key=lambda item: (item[1] if item[1] is not None else -1, str(item[0])), reverse=True)
         for child, child_size, child_error, child_timed_out in child_rows:
             if len(nodes) >= node_limit or budget_exhausted(deadline):
@@ -2163,7 +2189,7 @@ def main(argv: list[str]) -> int:
             target = focus_path if focus_path.is_dir() else focus_path.parent
             return build_tui_report(args, [str(target)])
 
-        return run_tui(report, expand_node, rescan_focused_map)
+        return run_tui(report, expand_node, rescan_focused_map, home)
     if args.format == "json":
         output = json.dumps(report, ensure_ascii=False, indent=2)
     else:

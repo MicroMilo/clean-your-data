@@ -29,20 +29,36 @@
 
 ## 立刻运行
 
+在 Codex 中分两条消息发送。新安装的 Skill 要到下一轮对话才会生效。
+
+> 安装 `https://github.com/MicroMilo/clean-your-data/tree/v0.5.0/skills/clean-your-data` 中的 `clean-your-data` Skill。
+
+安装完成后再发送：
+
+> 使用 `$clean-your-data` 只读解释 `PATH`：可能来源、依据、移动后的影响、未知项和最安全的下一步检查。
+
+Skill 会在本机安装或运行 `cyd`，并先生成一份稳定、只包含元信息的证据包：
+
+```bash
+cyd why PATH --format json
+```
+
+这个命令不会把文件正文交给 Agent，Agent 的回答也不能授权移动文件。
+
 安装 [`uv`](https://docs.astral.sh/uv/) 后，不用 clone，也不用永久安装：
 
 ```bash
 # 终端工作区
-uvx --from git+https://github.com/MicroMilo/clean-your-data.git cyd .
+uvx --from git+https://github.com/MicroMilo/clean-your-data.git@v0.5.0 cyd .
 
 # 浏览器工作区
-uvx --from git+https://github.com/MicroMilo/clean-your-data.git cyd gui .
+uvx --from git+https://github.com/MicroMilo/clean-your-data.git@v0.5.0 cyd gui .
 ```
 
 希望随处使用 `cyd` 时再安装：
 
 ```bash
-uv tool install git+https://github.com/MicroMilo/clean-your-data.git
+uv tool install --force git+https://github.com/MicroMilo/clean-your-data.git@v0.5.0
 cyd ~/Documents/project          # TUI
 cyd gui ~/Documents/project      # GUI
 ```
@@ -77,23 +93,21 @@ cyd config ai --off
 
 Agent 只收到受限元信息，不会收到选中文件的预览或正文。它只能提供建议，不能绕过清理门禁。自定义命令以直接参数执行，不经过 shell。
 
-也可以把仓库地址直接交给 Agent，并告诉它：
-
-> 安装 Clean Your Data，只读检查 `PATH`，解释最大的分支和可能归属；没有我的精确批准，不移动任何内容。
-
 ## 安全约束
 
 - 初始扫描只在本地进行，以元信息为主，不发起网络请求。
 - 疑似敏感名称和二进制文件不会预览；普通预览只留在本地，也不会进入 Agent Prompt。
 - 清理从不永久删除：只有再次确认的精确路径才会进入系统废纸篓，并在恢复仍然安全时支持撤销。
+- Git 已跟踪的路径不能进入废纸篓确认，请通过 Git 管理。
 - 报告默认把 home 路径匿名化为 `~`，公开分享前仍需检查项目名和文件夹名。
+- 安装 Skill 或软件包需要联网，并会写入 Agent 的 Skill 目录或包运行器缓存；本地扫描本身不联网。
 
 自行配置的 Agent 命令遵循它自己的联网与凭据策略。完整边界见 [Privacy](PRIVACY.md) 与 [Security](SECURITY.md)。
 
 ## 更多
 
-[完整用法与快捷键](docs/USAGE.md) · [English README](README.md) · [匿名化报告样例](examples/sample-report.md) · [Agent 交接词](examples/agent-handoff.md) · [版本记录](CHANGELOG.md)
+[Agent Skill](skills/clean-your-data/SKILL.md) · [完整用法与快捷键](docs/USAGE.md) · [English README](README.md) · [版本记录](CHANGELOG.md)
 
-Clean Your Data 目前是 Beta。`v0.4.0` 已包含 GUI、键盘优先的 TUI、可选 Agent 接入、可逆清理、重复文件检测、报告比较和主动开启的 Agent Trace。
+Clean Your Data 目前是 Beta。`v0.5.0` 在 GUI、TUI、Agent Trace、可逆清理和重复文件检测基础上，加入了可安装 Agent Skill 与统一的 `cyd why` 证据接口。
 
 MIT 许可证，见 [LICENSE](LICENSE)。

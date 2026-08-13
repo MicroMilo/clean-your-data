@@ -1,0 +1,816 @@
+"""Explain why one local path may exist using bounded metadata evidence."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import sqlite3
+import stat as stat_module
+import subprocess
+import sys
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Optional, Sequence
+
+from .audit_local_files import human_size, now_iso, safe_report_path, scan_space_map
+from .audit_tui import analyze_path_relationships, sensitive_preview_path
+
+
+WHY_SCHEMA_VERSION = "1.0"
+DEFAULT_MAX_FILES = 2_000
+DEFAULT_TIME_BUDGET = 5
+TRACE_DATABASE = "provenance.sqlite3"
+STATE_ENV = "CLEAN_YOUR_DATA_STATE_DIR"
+
+PROJECT_MARKERS = {
+    ".git",
+    "Cargo.toml",
+    "Gemfile",
+    "go.mod",
+    "package.json",
+    "pom.xml",
+    "pyproject.toml",
+    "requirements.txt",
+}
+
+STACK_MARKERS = {
+    "Cargo.toml": "Rust project",
+    "Gemfile": "Ruby project",
+    "go.mod": "Go project",
+    "package.json": "Node.js project",
+    "pom.xml": "Java project",
+    "pyproject.toml": "Python project",
+    "requirements.txt": "Python project",
+}
+
+ARTIFACT_PROFILES: dict[str, dict[str, str]] = {
+    "node_modules": {
+        "source": "A JavaScript package manager most likely installed these project dependencies.",
+        "impact": "Local imports, builds, or tests may fail until dependencies are installed again.",
+        "next": "Confirm the package manager from the lockfile, then verify the reinstall command before moving it.",
+        "risk": "medium",
+        "confidence": "high",
+    },
+    ".venv": {
+        "source": "A Python environment tool most likely created this project-local virtual environment.",
+        "impact": "The project's selected Python interpreter and installed packages will stop working until the environment is recreated.",
+        "next": "Confirm the environment definition in pyproject.toml, requirements files, or project documentation.",
+        "risk": "medium",
+        "confidence": "high",
+    },
+    "venv": {
+        "source": "A Python environment tool most likely created this project-local virtual environment.",
+        "impact": "The project's selected Python interpreter and installed packages will stop working until the environment is recreated.",
+        "next": "Confirm the environment definition in pyproject.toml, requirements files, or project documentation.",
+        "risk": "medium",
+        "confidence": "medium",
+    },
+    "build": {
+        "source": "A project build command most likely created this output directory.",
+        "impact": "Local runs, tests, or packaging may lose generated output until it is rebuilt; hand-copied deliverables could be lost.",
+        "next": "Confirm the owning project's build command and check that no irreplaceable deliverable was copied into build/.",
+        "risk": "medium",
+        "confidence": "medium",
+    },
+    "dist": {
+        "source": "A packaging or release command most likely created this distribution directory.",
+        "impact": "Built release artifacts may disappear; source may recreate them, but an unpublished deliverable may not exist elsewhere.",
+        "next": "Check whether dist/ contains a published artifact or the only copy of a deliverable before moving it.",
+        "risk": "high",
+        "confidence": "medium",
+    },
+    ".next": {
+        "source": "The Next.js toolchain most likely created this build and cache directory.",
+        "impact": "The next local start or build will need to regenerate framework output.",
+        "next": "Confirm package.json and the project's normal Next.js build command.",
+        "risk": "low",
+        "confidence": "high",
+    },
+    "target": {
+        "source": "A Rust, Java, or other project toolchain most likely created this build directory.",
+        "impact": "Compiled output and incremental caches will be unavailable until the project rebuilds.",
+        "next": "Use the nearest project marker to identify the toolchain and verify its rebuild command.",
+        "risk": "medium",
+        "confidence": "medium",
+    },
+    ".turbo": {
+        "source": "Turborepo most likely created this local task cache.",
+        "impact": "Future tasks may run more slowly while the cache is rebuilt.",
+        "next": "Confirm this directory belongs to the current Turborepo workspace.",
+        "risk": "low",
+        "confidence": "high",
+    },
+    ".pnpm-store": {
+        "source": "pnpm most likely created this dependency store.",
+        "impact": "Dependencies may need to be downloaded or linked again.",
+        "next": "Prefer pnpm's own store management command instead of moving files manually.",
+        "risk": "medium",
+        "confidence": "high",
+    },
+    "__pycache__": {
+        "source": "Python most likely created this bytecode cache while importing or running code.",
+        "impact": "Python will regenerate bytecode; the next run may be slightly slower.",
+        "next": "Confirm it is inside a source tree and contains only generated bytecode.",
+        "risk": "low",
+        "confidence": "high",
+    },
+    ".pytest_cache": {
+        "source": "pytest most likely created this test cache.",
+        "impact": "pytest will lose cached test state and recreate it on a later run.",
+        "next": "Confirm the directory belongs to the selected test project.",
+        "risk": "low",
+        "confidence": "high",
+    },
+    ".mypy_cache": {
+        "source": "mypy most likely created this type-checking cache.",
+        "impact": "The next type check will rebuild its cache and may run more slowly.",
+        "next": "Confirm the directory belongs to the selected Python project.",
+        "risk": "low",
+        "confidence": "high",
+    },
+    ".ruff_cache": {
+        "source": "Ruff most likely created this linting cache.",
+        "impact": "The next lint run will recreate its cache.",
+        "next": "Confirm the directory belongs to the selected Python project.",
+        "risk": "low",
+        "confidence": "high",
+    },
+}
+AMBIGUOUS_ARTIFACT_NAMES = {"build", "dist", "target", "venv"}
+
+
+class WhyError(Exception):
+    """A user-facing path explanation error."""
+
+
+def _exists_without_following(path: Path) -> bool:
+    try:
+        path.lstat()
+    except OSError:
+        return False
+    return True
+
+
+def _display_unresolved_path(path: Path, home: Path) -> str:
+    absolute = Path(os.path.abspath(str(path)))
+    try:
+        relative = absolute.relative_to(home)
+        return "~" if not relative.parts else "~/" + str(relative)
+    except ValueError:
+        return f"<external>/{absolute.name or 'root'}"
+
+
+def _path_ancestors(path: Path, limit: int = 10) -> list[Path]:
+    start = path if path.is_dir() else path.parent
+    result: list[Path] = []
+    current = start
+    for _ in range(limit):
+        result.append(current)
+        if current.parent == current:
+            break
+        current = current.parent
+    return result
+
+
+def _project_context(path: Path, home: Path) -> dict[str, Any]:
+    for candidate in _path_ancestors(path):
+        markers = sorted(marker for marker in PROJECT_MARKERS if _exists_without_following(candidate / marker))
+        if not markers:
+            continue
+        stacks = sorted({STACK_MARKERS[marker] for marker in markers if marker in STACK_MARKERS})
+        return {
+            "found": True,
+            "root": candidate,
+            "display_root": safe_report_path(candidate, home, True),
+            "markers": markers,
+            "stacks": stacks,
+        }
+    return {"found": False, "root": None, "display_root": None, "markers": [], "stacks": []}
+
+
+def _artifact_context(path: Path, project_root: Optional[Path]) -> Optional[dict[str, Any]]:
+    for candidate in _path_ancestors(path):
+        profile = ARTIFACT_PROFILES.get(candidate.name.lower())
+        if profile and (project_root is not None or candidate.name.lower() not in AMBIGUOUS_ARTIFACT_NAMES):
+            return {"name": candidate.name, "root": candidate, "profile": profile}
+        if project_root is not None and candidate == project_root:
+            break
+    return None
+
+
+def _run_git(command: list[str], timeout: int = 4) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=False)
+
+
+def _git_context(path: Path, project: dict[str, Any]) -> dict[str, Any]:
+    root: Optional[Path] = None
+    for candidate in _path_ancestors(path):
+        marker = candidate / ".git"
+        try:
+            marker_stat = marker.lstat()
+        except OSError:
+            continue
+        if not stat_module.S_ISLNK(marker_stat.st_mode):
+            root = candidate
+            break
+    if root is None:
+        return {"status": "not_git", "tracked": None}
+    if not shutil.which("git"):
+        return {"status": "git_unavailable", "tracked": None}
+    try:
+        relative = str(path.relative_to(root))
+        tracked_result = _run_git(["git", "-C", str(root), "ls-files", "--error-unmatch", "--", relative])
+        tracked = tracked_result.returncode == 0
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return {"status": "check_failed", "tracked": None}
+    return {"status": "tracked" if tracked else "not_tracked", "tracked": tracked}
+
+
+def _state_dir(override: Optional[Path] = None) -> Path:
+    if override is not None:
+        return override.expanduser()
+    configured = os.environ.get(STATE_ENV, "").strip()
+    return Path(configured).expanduser() if configured else Path.home() / ".clean-your-data"
+
+
+def _like_prefix(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + os.sep + "%"
+
+
+def _trace_context(path: Path, state_dir: Path, enabled: bool) -> dict[str, Any]:
+    if not enabled:
+        return {"status": "disabled", "events": []}
+    database = state_dir / TRACE_DATABASE
+    try:
+        database_stat = database.lstat()
+    except OSError:
+        return {"status": "not_found", "events": []}
+    if stat_module.S_ISLNK(database_stat.st_mode) or not stat_module.S_ISREG(database_stat.st_mode):
+        return {"status": "unavailable", "events": []}
+    selected = str(path)
+    try:
+        database_uri = database.resolve().as_uri() + "?mode=ro"
+        with sqlite3.connect(database_uri, uri=True) as connection:
+            rows = connection.execute(
+                """
+                SELECT s.session_id, s.started_at, s.finished_at, s.command_json,
+                       e.path, e.event_types_json, e.last_observed_at
+                FROM trace_events AS e
+                JOIN trace_sessions AS s ON s.session_id = e.session_id
+                WHERE e.path = ? OR e.path LIKE ? ESCAPE '\\'
+                ORDER BY e.last_observed_at DESC
+                LIMIT 8
+                """,
+                (selected, _like_prefix(selected)),
+            ).fetchall()
+    except (OSError, sqlite3.Error):
+        return {"status": "unavailable", "events": []}
+    events: list[dict[str, Any]] = []
+    for session, started, finished, command_json, event_path, event_types_json, observed_at in rows:
+        try:
+            command = json.loads(command_json)
+        except (TypeError, json.JSONDecodeError):
+            command = []
+        try:
+            event_types = json.loads(event_types_json)
+        except (TypeError, json.JSONDecodeError):
+            event_types = []
+        executable = Path(str(command[0])).name if isinstance(command, list) and command else "recorded command"
+        events.append(
+            {
+                "session_id": str(session),
+                "command": executable,
+                "scope": "exact_path" if event_path == selected else "descendant",
+                "event_types": [str(item) for item in event_types],
+                "started_at": started,
+                "finished_at": finished,
+                "last_observed_at": observed_at,
+            }
+        )
+    return {"status": "found" if events else "not_found", "events": events}
+
+
+def _classification(
+    path: Path,
+    node: dict[str, Any],
+    project: dict[str, Any],
+    artifact: Optional[dict[str, Any]],
+    home: Path,
+) -> dict[str, str]:
+    category = str(node.get("category") or "unknown")
+    if sensitive_preview_path(path) or path in {Path("/"), home}:
+        return {
+            "id": "protected",
+            "label": "Protected or credential-related path",
+            "confidence": "high",
+            "basis": "The path name or one of its parents matches a protected credential, VCS, or system boundary.",
+        }
+    if category == "app-state":
+        return {
+            "id": category,
+            "label": "App-managed state",
+            "confidence": "high",
+            "basis": "The path is inside a known application-managed storage location.",
+        }
+    if category == "cloud-sync":
+        return {
+            "id": category,
+            "label": "Cloud-synchronized data",
+            "confidence": "high",
+            "basis": "The path is inside a known cloud-sync location.",
+        }
+    if artifact:
+        return {
+            "id": "cache",
+            "label": "Likely rebuildable project artifact",
+            "confidence": str(artifact["profile"]["confidence"]),
+            "basis": f"The path is {artifact['name']}/ or is contained by that recognized tool output directory.",
+        }
+    if project.get("found"):
+        return {
+            "id": "workspace",
+            "label": "Project workspace data",
+            "confidence": "high",
+            "basis": "A nearby project or version-control marker associates this path with a project workspace.",
+        }
+    if category == "inbox":
+        return {
+            "id": category,
+            "label": "Inbox or downloaded data",
+            "confidence": "high",
+            "basis": "The path is inside a known inbox-like location.",
+        }
+    if category == "workspace" and node.get("area") != "Selected area":
+        return {
+            "id": category,
+            "label": "Workspace data",
+            "confidence": "medium",
+            "basis": "The selected scope is work-like, but no stronger project marker was found in the bounded scan.",
+        }
+    return {
+        "id": "unknown",
+        "label": "Unknown ownership",
+        "confidence": "low",
+        "basis": "The bounded metadata scan did not identify a reliable owner or generating workflow.",
+    }
+
+
+def _likely_source(
+    classification: dict[str, str],
+    project: dict[str, Any],
+    artifact: Optional[dict[str, Any]],
+    trace: dict[str, Any],
+) -> dict[str, str]:
+    exact_events = [event for event in trace.get("events", []) if event.get("scope") == "exact_path"]
+    created = next((event for event in exact_events if "created" in event.get("event_types", [])), None)
+    if created:
+        return {
+            "summary": (
+                f"A traced {created['command']} run observed this path being created. "
+                "That is a time-bounded association, not proof of the exact child process that wrote it."
+            ),
+            "confidence": "medium",
+            "basis": "observed_association",
+        }
+    modified = next((event for event in exact_events if "modified" in event.get("event_types", [])), None)
+    if modified:
+        return {
+            "summary": (
+                f"A traced {modified['command']} run observed this path changing. "
+                "The path may predate that run, and the exact writer is not proven."
+            ),
+            "confidence": "medium",
+            "basis": "observed_association",
+        }
+    category = classification["id"]
+    if category == "protected":
+        return {
+            "summary": "A system, version-control, or credential workflow owns this protected path.",
+            "confidence": "medium",
+            "basis": "protected_path_boundary",
+        }
+    if category == "app-state":
+        return {
+            "summary": "The owning application most likely created and continues to manage this path.",
+            "confidence": "high",
+            "basis": "app_storage_boundary",
+        }
+    if category == "cloud-sync":
+        return {
+            "summary": "A sync provider or a user workflow on a synchronized device most likely created this path.",
+            "confidence": "medium",
+            "basis": "cloud_sync_boundary",
+        }
+    if artifact:
+        return {
+            "summary": str(artifact["profile"]["source"]),
+            "confidence": str(artifact["profile"]["confidence"]),
+            "basis": "path_pattern_and_project_context",
+        }
+    if category == "inbox":
+        summary = "A browser, transfer, export, or user download workflow most likely placed this path here."
+        confidence = "medium"
+    elif project.get("found"):
+        stacks = project.get("stacks") or []
+        stack_text = ", ".join(stacks) if stacks else "project"
+        summary = f"A developer, coding Agent, or {stack_text} toolchain most likely created or maintains this path."
+        confidence = "low"
+    else:
+        summary = "The creating application or command is not known from the bounded metadata available."
+        confidence = "low"
+    return {"summary": summary, "confidence": confidence, "basis": "metadata_inference"}
+
+
+def _impact(
+    classification: dict[str, str],
+    artifact: Optional[dict[str, Any]],
+    git: dict[str, Any],
+) -> dict[str, str]:
+    category = classification["id"]
+    if category == "protected":
+        return {"risk": "critical", "summary": "Moving it may break credentials, version control, or a protected system boundary."}
+    if category == "app-state":
+        return {"risk": "high", "summary": "Moving it directly may corrupt application state or remove user data managed by the app."}
+    if category == "cloud-sync":
+        return {"risk": "high", "summary": "Moving it may propagate through sync, remove another device's expected copy, or trigger a re-download."}
+    if git.get("status") == "tracked":
+        return {"risk": "high", "summary": "The selected path is tracked by Git or contains tracked files; moving it changes the working tree, and its uncommitted state was not inspected."}
+    if artifact:
+        return {"risk": str(artifact["profile"]["risk"]), "summary": str(artifact["profile"]["impact"])}
+    if category == "workspace":
+        return {"risk": "high", "summary": "The path may contain active project work or outputs whose only copy is local."}
+    if category == "inbox":
+        return {"risk": "medium", "summary": "The local copy will no longer be available at its current location; its original source may not be recoverable."}
+    return {"risk": "high", "summary": "Ownership is unknown, so the effect of moving this path cannot be bounded safely."}
+
+
+def _next_check(
+    classification: dict[str, str],
+    artifact: Optional[dict[str, Any]],
+    project: dict[str, Any],
+    trace: dict[str, Any],
+    git: dict[str, Any],
+) -> str:
+    if classification["id"] == "protected":
+        return "Do not move it directly. Identify and use the owning credential, VCS, or system tool."
+    if classification["id"] == "app-state":
+        return "Open the owning application's storage or account settings and manage the data there."
+    if classification["id"] == "cloud-sync":
+        return "Verify sync completion, retention, and whether another device relies on this path."
+    if git.get("status") == "tracked":
+        return "Inspect Git status and history for this exact path before moving it; the metadata-only check did not inspect content differences."
+    if artifact:
+        return str(artifact["profile"]["next"])
+    if project.get("found") and git.get("status") == "directory_not_checked":
+        return "Run Git status in the owning project and identify durable outputs before moving this directory."
+    if project.get("found"):
+        return "Confirm how the nearest project marker and Git state reference this path before moving it."
+    if trace.get("status") != "found":
+        return "If origin matters, run the suspected command through `cyd trace --path PATH -- <command>` prospectively."
+    return "Inspect the smallest amount of additional metadata needed to identify the owner; do not infer safety from size alone."
+
+
+def _action_gate(
+    classification: dict[str, str],
+    measurement: str,
+    path: Path,
+    home: Path,
+    git: dict[str, Any],
+) -> dict[str, Any]:
+    category = classification["id"]
+    if path in {Path("/"), home}:
+        status, reason = "blocked", "Filesystem root and the home directory are protected."
+    elif measurement != "measured":
+        status, reason = "blocked", "The path was not measured completely."
+    elif git.get("status") == "tracked":
+        status, reason = "blocked", "The path is tracked by Git or contains tracked files."
+    elif git.get("status") in {"git_unavailable", "check_failed"}:
+        status, reason = "blocked", "Git index membership could not be checked for this project path."
+    elif category in {"protected", "app-state", "cloud-sync", "unknown"}:
+        status, reason = "blocked", "The path is protected, owner-managed, synchronized, or not understood."
+    else:
+        status, reason = "review_only", "Evidence is sufficient for human review, not for an automatic move."
+    return {
+        "status": status,
+        "reason": reason,
+        "authorizes_move": False,
+        "why_command_moves_files": False,
+        "required_next_surface": "Use the TUI or GUI to review and confirm one exact path; Agent advice cannot approve the action.",
+    }
+
+
+def _symlink_report(path: Path, home: Path, stat_result: os.stat_result) -> dict[str, Any]:
+    shown = _display_unresolved_path(path, home)
+    modified = datetime.fromtimestamp(stat_result.st_mtime).astimezone().isoformat(timespec="seconds")
+    return {
+        "why_schema_version": WHY_SCHEMA_VERSION,
+        "generated_at": now_iso(),
+        "question": "Why is this here?",
+        "status": "complete",
+        "read_only": True,
+        "content_read": False,
+        "path": {"display": shown, "name": path.name or shown, "kind": "symlink"},
+        "measurement": {"status": "metadata_only", "allocated_bytes": int(stat_result.st_size), "human_size": human_size(int(stat_result.st_size)), "modified_at": modified},
+        "classification": {"id": "symlink", "label": "Symbolic link", "confidence": "high", "basis": "The selected directory entry is a symbolic link; its target was not followed."},
+        "likely_source": {"summary": "A user, application, project tool, or Agent created this link, but its creator is not known from link metadata.", "confidence": "low", "basis": "metadata_inference"},
+        "evidence": [{"kind": "path_type", "strength": "observed", "detail": "The path is a symbolic link. Clean Your Data did not follow or scan its target."}],
+        "impact_if_moved": {"risk": "high", "summary": "Consumers that rely on this link may stop resolving the intended target."},
+        "unknowns": ["The link target and creating command were intentionally not inspected."],
+        "safest_next_check": "Inspect the link and its target as separate paths before changing either one.",
+        "action_gate": {"status": "blocked", "reason": "Symbolic links are not eligible for this review flow.", "authorizes_move": False, "why_command_moves_files": False, "required_next_surface": "Inspect the link and target separately."},
+        "analysis_scope": {
+            "selected_path": shown,
+            "relationship_path": shown,
+            "mode": "selected_symlink_only",
+            "relationship_status": "not_applicable",
+            "files_scanned": 0,
+            "directories_seen": 0,
+            "limited": False,
+            "project_context_root": None,
+            "ancestor_marker_lookup": False,
+        },
+        "limits": {"metadata_only": True, "file_contents_read": False, "symlink_targets_followed": False},
+    }
+
+
+def build_why_report(
+    selected_path: Path,
+    *,
+    home: Optional[Path] = None,
+    state_dir: Optional[Path] = None,
+    include_trace: bool = True,
+    max_files: int = DEFAULT_MAX_FILES,
+    time_budget: int = DEFAULT_TIME_BUDGET,
+) -> dict[str, Any]:
+    """Build one shareable, metadata-only explanation packet."""
+    home_root = (home or Path.home()).expanduser().resolve()
+    requested = selected_path.expanduser()
+    shown_before_resolution = _display_unresolved_path(requested, home_root)
+    try:
+        path_stat = requested.lstat()
+    except OSError as exc:
+        raise WhyError(f"Path is unavailable: {shown_before_resolution}: {exc.strerror or 'could not inspect path'}") from exc
+    if stat_module.S_ISLNK(path_stat.st_mode):
+        return _symlink_report(Path(os.path.abspath(str(requested))), home_root, path_stat)
+    try:
+        resolved = requested.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise WhyError(f"Path could not be resolved: {shown_before_resolution}") from exc
+
+    mapped = scan_space_map(
+        [resolved],
+        [],
+        [resolved],
+        home_root,
+        0,
+        1,
+        max(1, min(time_budget, 5)),
+        0,
+        True,
+        include_local_paths=True,
+        allow_skipped_root=True,
+    )
+    node = next((item for item in mapped.get("nodes", []) if item.get("parent_id") is None), None)
+    if not node:
+        raise WhyError(f"The bounded metadata scan could not inspect: {safe_report_path(resolved, home_root, True)}")
+
+    project = _project_context(resolved, home_root)
+    artifact = _artifact_context(resolved, project.get("root"))
+    git = _git_context(resolved, project)
+    trace = _trace_context(resolved, _state_dir(state_dir), include_trace)
+    classification = _classification(resolved, node, project, artifact, home_root)
+    likely_source = _likely_source(classification, project, artifact, trace)
+    impact = _impact(classification, artifact, git)
+
+    skip_relationships = classification["id"] in {"protected", "app-state", "cloud-sync"}
+    if resolved.is_dir() and not skip_relationships:
+        relationships = analyze_path_relationships(
+            node,
+            max_files=max(1, min(max_files, 20_000)),
+            time_budget=max(1, min(time_budget, 30)),
+        )
+        relationship_scope = safe_report_path(resolved, home_root, True)
+        relationship_mode = "selected_directory"
+    elif resolved.is_dir():
+        relationships = {
+            "status": "not_applicable",
+            "files_scanned": 0,
+            "directories_seen": 0,
+            "relations": [],
+        }
+        relationship_scope = safe_report_path(resolved, home_root, True)
+        relationship_mode = "selected_directory_metadata_only"
+    else:
+        relationships = {
+            "status": "not_applicable",
+            "files_scanned": 0,
+            "directories_seen": 0,
+            "relations": [],
+        }
+        relationship_scope = safe_report_path(resolved, home_root, True)
+        relationship_mode = "selected_file_only"
+
+    evidence: list[dict[str, str]] = [
+        {
+            "kind": "measurement",
+            "strength": "observed",
+            "detail": f"Allocated size is {node.get('human_size') or 'unknown'}; measurement status is {node.get('measurement_status') or 'unknown'}.",
+        },
+        {"kind": "classification", "strength": "inference", "detail": classification["basis"]},
+    ]
+    if project.get("found"):
+        markers = ", ".join(project.get("markers") or [])
+        evidence.append(
+            {
+                "kind": "project_context",
+                "strength": "observed",
+                "detail": f"Nearest project root is {project['display_root']}; markers found: {markers}.",
+            }
+        )
+    git_status = git.get("status")
+    if git_status == "tracked":
+        evidence.append({"kind": "git", "strength": "observed", "detail": "The selected path is tracked by Git or contains tracked files; content and dirty state were not inspected."})
+    elif git_status == "not_tracked":
+        evidence.append({"kind": "git", "strength": "observed", "detail": "The selected path is not tracked in the nearest Git index; content and dirty state were not inspected."})
+    for relation in relationships.get("relations", [])[:4]:
+        evidence.append(
+            {
+                "kind": "relationship",
+                "strength": "inference",
+                "detail": f"{relation.get('title', 'Relationship')}: {relation.get('detail', '')}",
+            }
+        )
+    for event in trace.get("events", [])[:2]:
+        event_text = ", ".join(event.get("event_types") or []) or "changed"
+        evidence.append(
+            {
+                "kind": "trace",
+                "strength": "observed_association",
+                "detail": (
+                    f"A traced {event.get('command')} session observed {event_text} on the "
+                    f"{'exact path' if event.get('scope') == 'exact_path' else 'a descendant'}; this does not prove the exact writer."
+                ),
+            }
+        )
+
+    unknowns: list[str] = []
+    if trace.get("status") == "not_found":
+        unknowns.append("No prospective trace record associates this path with a captured command.")
+    elif trace.get("status") == "disabled":
+        unknowns.append("Local trace history was not requested for this explanation.")
+    elif trace.get("status") == "unavailable":
+        unknowns.append("Local trace history could not be read.")
+    if trace.get("events"):
+        unknowns.append("Trace proves timing and scope association, not which child process performed the write.")
+    else:
+        unknowns.append("The exact application, Agent conversation, command, and creation time are not proven by current metadata.")
+    if artifact and artifact["name"].lower() in {"build", "dist", "target"}:
+        unknowns.append("The scan cannot prove that generated output is not mixed with a manually copied deliverable.")
+    if relationships.get("status") != "complete" or mapped.get("status") != "complete":
+        if relationships.get("status") != "not_applicable":
+            unknowns.append("The bounded metadata scan stopped early, so unseen relationships may exist.")
+    if node.get("child_count_limited"):
+        unknowns.append("The immediate-entry count reached its reporting limit and is shown as a lower bound.")
+    if skip_relationships:
+        unknowns.append("Relationship traversal was skipped because this path is protected or owner-managed.")
+    if git_status in {"tracked", "not_tracked"}:
+        unknowns.append("Git dirty state was intentionally not checked because that can require reading file contents.")
+
+    measurement = str(node.get("measurement_status") or "unknown")
+    relationship_complete = relationships.get("status") in {"complete", "not_applicable"}
+    return {
+        "why_schema_version": WHY_SCHEMA_VERSION,
+        "generated_at": now_iso(),
+        "question": "Why is this here?",
+        "status": "complete" if mapped.get("status") == "complete" and relationship_complete else "partial",
+        "read_only": True,
+        "content_read": False,
+        "path": {
+            "display": str(node.get("path") or safe_report_path(resolved, home_root, True)),
+            "name": str(node.get("name") or resolved.name),
+            "kind": str(node.get("kind") or "unknown"),
+        },
+        "measurement": {
+            "status": measurement,
+            "allocated_bytes": node.get("allocated_bytes"),
+            "human_size": node.get("human_size") or "unknown",
+            "modified_at": node.get("modified_at"),
+            "child_count": node.get("child_count", 0),
+            "child_count_limited": bool(node.get("child_count_limited")),
+        },
+        "classification": classification,
+        "likely_source": likely_source,
+        "evidence": evidence,
+        "impact_if_moved": impact,
+        "unknowns": unknowns,
+        "safest_next_check": _next_check(classification, artifact, project, trace, git),
+        "action_gate": _action_gate(classification, measurement, resolved, home_root, git),
+        "analysis_scope": {
+            "selected_path": safe_report_path(resolved, home_root, True),
+            "relationship_path": relationship_scope,
+            "mode": relationship_mode,
+            "relationship_status": relationships.get("status"),
+            "files_scanned": int(relationships.get("files_scanned") or 0),
+            "directories_seen": int(relationships.get("directories_seen") or 0),
+            "limited": relationships.get("status") not in {"complete", "not_applicable"},
+            "project_context_root": project.get("display_root"),
+            "ancestor_marker_lookup": True,
+        },
+        "limits": {
+            "metadata_only": True,
+            "file_contents_read": False,
+            "symlink_targets_followed": False,
+            "relationship_max_files": max(1, min(max_files, 20_000)),
+            "relationship_time_budget_seconds": max(1, min(time_budget, 30)),
+            "trace_attribution": "observed association, not exact writer proof",
+        },
+    }
+
+
+def render_text(report: dict[str, Any]) -> str:
+    path = report["path"]
+    measurement = report["measurement"]
+    classification = report["classification"]
+    source = report["likely_source"]
+    impact = report["impact_if_moved"]
+    gate = report["action_gate"]
+    lines = [
+        "WHY IS THIS HERE?",
+        "",
+        f"PATH            {path['display']}{'/' if path['kind'] == 'folder' and not str(path['display']).endswith('/') else ''}",
+        f"TYPE            {path['kind']}",
+        f"SPACE           {measurement['human_size']} ({measurement['status']})",
+        f"CLASSIFICATION  {classification['label']} [{classification['confidence']}]",
+        "",
+        "LIKELY SOURCE",
+        source["summary"],
+        f"Confidence: {source['confidence']} | Basis: {source['basis']}",
+        "",
+        "EVIDENCE",
+    ]
+    for item in report.get("evidence", []):
+        lines.append(f"- [{item['strength']}] {item['detail']}")
+    lines.extend(["", "IMPACT IF MOVED", f"Risk: {impact['risk']}", impact["summary"], "", "UNKNOWNS"])
+    for item in report.get("unknowns", []):
+        lines.append(f"- {item}")
+    lines.extend(
+        [
+            "",
+            "SAFEST NEXT CHECK",
+            report["safest_next_check"],
+            "",
+            "ACTION GATE",
+            f"{gate['status']}: {gate['reason']}",
+            "This command is read-only and never authorizes or moves a file.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def parse_args(argv: Sequence[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="cyd why",
+        description="Explain one path using bounded, metadata-only local evidence.",
+    )
+    parser.add_argument("path", nargs="?", default=".", help="File or directory to explain. Defaults to the current directory.")
+    parser.add_argument("--format", choices=["text", "json"], default="text", help="Human-readable text or a stable JSON evidence packet.")
+    parser.add_argument("--home", default=str(Path.home()), help="Home boundary used for path redaction. Defaults to the current home.")
+    parser.add_argument("--state-dir", help="Local Clean Your Data state directory used to look up optional trace evidence.")
+    parser.add_argument("--no-trace", action="store_true", help="Do not consult the local prospective trace database.")
+    parser.add_argument("--max-files", type=int, default=DEFAULT_MAX_FILES, help="Maximum files inspected by bounded relationship analysis.")
+    parser.add_argument("--time-budget", type=int, default=DEFAULT_TIME_BUDGET, help="Relationship-analysis time budget in seconds.")
+    return parser.parse_args(list(argv))
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    args = parse_args(sys.argv[1:] if argv is None else argv)
+    if args.max_files < 1:
+        print("error: --max-files must be at least 1", file=sys.stderr)
+        return 2
+    if args.time_budget < 1:
+        print("error: --time-budget must be at least 1 second", file=sys.stderr)
+        return 2
+    try:
+        report = build_why_report(
+            Path(args.path),
+            home=Path(args.home),
+            state_dir=Path(args.state_dir) if args.state_dir else None,
+            include_trace=not args.no_trace,
+            max_files=args.max_files,
+            time_budget=args.time_budget,
+        )
+    except WhyError as exc:
+        if args.format == "json":
+            print(json.dumps({"why_schema_version": WHY_SCHEMA_VERSION, "status": "error", "error": str(exc)}, ensure_ascii=False, indent=2))
+        else:
+            print(f"error: {exc}", file=sys.stderr)
+        return 2
+    output = json.dumps(report, ensure_ascii=False, indent=2) if args.format == "json" else render_text(report)
+    print(output)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

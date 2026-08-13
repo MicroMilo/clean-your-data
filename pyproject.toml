@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "clean-your-data"
-version = "0.4.0"
+version = "0.5.0"
 description = "A local-first disk explorer for humans and AI agents"
 readme = "README.md"
 requires-python = ">=3.9"

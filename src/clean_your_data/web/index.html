@@ -990,7 +990,7 @@
         '<section class="section"><div class="meta-grid">' +
           '<div class="meta"><span>Size</span><strong>' + escapeHtml(node.human_size || bytes(node.allocated_bytes)) + '</strong></div>' +
           '<div class="meta"><span>Modified</span><strong>' + escapeHtml(shortDate(node.modified_at)) + '</strong></div>' +
-          '<div class="meta"><span>Contains</span><strong>' + Number(node.child_count || 0) + ' entries</strong></div>' +
+          '<div class="meta"><span>Contains</span><strong>' + Number(node.child_count || 0) + (node.child_count_limited ? '+' : '') + ' entries</strong></div>' +
         '</div></section>' +
         '<section class="section"><div class="section-title"><h2>Preview</h2><span>local · limited</span></div><pre class="preview">' + escapeHtml(preview.lines.join("\n")) + '</pre></section>' +
         '<section class="section"><div class="section-title"><h2>What we know</h2><span>preliminary evidence</span></div><div class="evidence">' +

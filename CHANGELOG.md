@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.0 - 2026-08-13
+
+- Added `cyd why PATH` for stable, metadata-only path explanations that separate observed evidence from inference.
+- Added likely source, impact-if-moved, unknowns, safest-next-check, and non-authorizing action-gate fields for Agent handoff.
+- Added an installable `clean-your-data` Agent Skill and reduced the original audit Skill to an explicit compatibility entry.
+- Added privacy regression coverage for file bodies, absolute home paths, external symlink targets, and traced command arguments.
+- Reused the same evidence packet in TUI and GUI Agent questions while keeping TUI generation asynchronous.
+- Bounded large-directory entry counting and relationship scans to keep startup and path explanations responsive.
+- Blocked Git-tracked paths from executable Trash review without reading working-tree file contents.
+
 ## 0.4.0 - 2026-08-12
 
 - Added `cyd gui [PATH]`, a local browser interface backed by the same scanner and cleanup gates as the TUI.

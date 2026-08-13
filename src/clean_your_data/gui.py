@@ -24,7 +24,7 @@ from .audit_local_files import expand_space_map_node, scan_space_map
 from .audit_tui import (
     analyze_path_relationships,
     ask_local_ai,
-    build_prompt,
+    build_path_evidence_prompt,
     cleanup_gate,
     load_cleanup_history,
     move_to_trash,
@@ -135,7 +135,9 @@ class GuiSession:
         return node
 
     def public_node(self, node: dict[str, Any]) -> dict[str, Any]:
-        allowed, reason = self.cleanup_eligibility(node)
+        # Keep list rendering cheap. The selected path receives the Git-index
+        # check in inspect(), staging, and final confirmation.
+        allowed, reason = self.cleanup_eligibility(node, check_git=False)
         name = str(node.get("name") or "")
         category = str(node.get("category") or "unknown")
         if not allowed:
@@ -229,7 +231,7 @@ class GuiSession:
             "advice": preliminary_cleanup_advice(node),
             "cleanup": {"eligible": allowed, "reason": reason},
             "ai_context": {
-                "includes": ["redacted path", "name", "kind", "size", "modified time", "category", "measurement status"],
+                "includes": ["redacted path", "name", "kind", "size", "modified time", "category", "project markers", "bounded relationships", "optional local trace association"],
                 "excludes": ["file preview", "file contents", "credentials", "cleanup authority"],
             },
         }
@@ -237,7 +239,7 @@ class GuiSession:
     def relationships(self, node_id: str) -> dict[str, Any]:
         return analyze_path_relationships(self.node(node_id))
 
-    def cleanup_eligibility(self, node: dict[str, Any]) -> tuple[bool, str]:
+    def cleanup_eligibility(self, node: dict[str, Any], *, check_git: bool = True) -> tuple[bool, str]:
         if str(node.get("node_id")) == str(self.root_node().get("node_id")):
             return False, "the active GUI scope is protected"
         local_path = Path(str(node.get("_local_path") or ""))
@@ -245,7 +247,7 @@ class GuiSession:
             local_path.resolve().relative_to(self.root)
         except (OSError, RuntimeError, ValueError):
             return False, "the path is outside the active GUI scope"
-        return cleanup_gate(node)
+        return cleanup_gate(node, check_git=check_git)
 
     def toggle_stage(self, node_id: str) -> dict[str, Any]:
         node = self.node(node_id)
@@ -277,7 +279,7 @@ class GuiSession:
         if len(clean_question) > GUI_QUESTION_LIMIT:
             raise GuiRequestError(f"Question must be at most {GUI_QUESTION_LIMIT} characters.")
         answer, message = ask_local_ai(
-            build_prompt(node, clean_question),
+            build_path_evidence_prompt(node, clean_question, home=self.home),
             config_path=self.ai_config_path,
         )
         if answer is None:

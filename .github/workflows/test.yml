@@ -21,6 +21,8 @@ jobs:
         run: python -m py_compile src/clean_your_data/*.py audit-local-files/scripts/*.py
       - name: Run packaged CLI test
         run: python tests/package_test.py
+      - name: Build and exercise wheel
+        run: python tests/install_test.py
       - name: Run smoke test
         run: python tests/smoke_test.py
       - name: Run contract test
@@ -35,6 +37,10 @@ jobs:
         run: python tests/gui_test.py
       - name: Run Agent trace test
         run: python tests/trace_test.py
+      - name: Run path explanation test
+        run: python tests/why_test.py
+      - name: Run Agent Skill contract test
+        run: python tests/skill_test.py
       - name: Run cleanup loop test
         run: python tests/cleanup_test.py
       - name: Run workspace actions test

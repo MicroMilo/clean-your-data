@@ -7,21 +7,23 @@ This guide covers installation, the GUI and TUI controls, local Agent configurat
 Run without a checkout or permanent install:
 
 ```bash
-uvx --from git+https://github.com/MicroMilo/clean-your-data.git cyd gui .
-uvx --from git+https://github.com/MicroMilo/clean-your-data.git cyd .
+uvx --from git+https://github.com/MicroMilo/clean-your-data.git@v0.5.0 cyd gui .
+uvx --from git+https://github.com/MicroMilo/clean-your-data.git@v0.5.0 cyd .
 ```
 
 Install from GitHub:
 
 ```bash
-uv tool install git+https://github.com/MicroMilo/clean-your-data.git
+uv tool install --force git+https://github.com/MicroMilo/clean-your-data.git@v0.5.0
 cyd --version
 ```
+
+`--force` also replaces an older `cyd` installation. A successful install should print `clean-your-data 0.5.0` from `cyd --version`.
 
 Install a downloaded release wheel:
 
 ```bash
-python3 -m pip install clean_your_data-0.4.0-py3-none-any.whl
+python3 -m pip install clean_your_data-0.5.0-py3-none-any.whl
 ```
 
 Install a source checkout for development:
@@ -32,7 +34,42 @@ cd clean-your-data
 python3 -m pip install .
 ```
 
+Run `cyd --help` for the product entry points. The original broad report flags remain under `cyd audit --help`.
+
 Clean Your Data requires Python 3.9+ and currently targets macOS/Linux. It has no third-party Python runtime dependencies. It uses `du` for allocated-size measurement, `git` only for optional Git checks, `curses` for the TUI, and Python's standard HTTP server for the GUI.
+
+## Explain One Path To An Agent
+
+Use the non-interactive command when an Agent needs local evidence about one file or directory:
+
+```bash
+cyd why ~/Documents/project/build --format json
+```
+
+The result has stable sections for `likely_source`, `evidence`, `impact_if_moved`, `unknowns`, `safest_next_check`, and `action_gate`. Evidence is labeled as observed fact, bounded observation, prospective trace association, or inference. For a directory, relationship analysis stays inside that selected directory and reports its actual scope and file count in `analysis_scope`; a selected file does not trigger a parent-directory traversal. Up to ten ancestor levels may be checked for project-marker names, and the detected root is reported as `project_context_root`. The command reads directory-entry metadata, names, sizes, project markers, and the local optional trace database; it does not read selected file contents, follow a selected symbolic link, move files, or authorize cleanup.
+
+Use text when a human will read the result directly:
+
+```bash
+cyd why ~/Documents/project/build
+```
+
+Install the repository's Agent Skill by giving an Agent this fixed release directory URL:
+
+```text
+https://github.com/MicroMilo/clean-your-data/tree/v0.5.0/skills/clean-your-data
+```
+
+In Codex, use two turns:
+
+```text
+Install the clean-your-data Skill from https://github.com/MicroMilo/clean-your-data/tree/v0.5.0/skills/clean-your-data
+
+# After Codex confirms installation, send this in the next turn:
+Use $clean-your-data to explain PATH read-only.
+```
+
+The Skill first probes `cyd why --help`. If the installed command is missing or too old, it asks before downloading the fixed `v0.5.0` package through `uvx`; it does not silently install a permanent tool or execute `main`. It then preserves uncertainty and escalates to the TUI, GUI, prospective trace, content inspection, or Trash review only when the user asks.
 
 ## Browser GUI
 
@@ -113,6 +150,8 @@ Search, filter, and sort only operate on paths already loaded into the current m
 
 Selected text files receive a local preview limited to 4 KB and 14 lines. Binary files and likely credential paths are hidden. Preview content never enters the Agent prompt.
 
+Paths tracked by Git, including directories containing tracked files, are blocked from executable Trash review. Clean Your Data checks the Git index for the selected path but does not inspect working-tree content differences; use Git status and history before deciding what to do.
+
 Path launch actions use direct arguments, not shell interpolation. Bookmarks, tags, recent paths, and the last workspace stay in `~/.clean-your-data/workspace-state.json` and are not added to reports.
 
 ## Configure An Agent
@@ -131,7 +170,7 @@ cyd config ai --show
 
 The saved custom command is stored verbatim in `~/.clean-your-data/ai-config.json` with user-only permissions where supported. Never put credentials in its arguments. Keep them in the provider's environment or credential store.
 
-The prompt contains the redacted path, name, kind, size, modified time, category, and measurement status. It excludes the selected preview, file contents, credentials, and cleanup authority. A custom provider still has its own operating-system permissions and network policy; configure only a command you trust.
+The prompt contains the redacted path, name, kind, size, modified time, category, measurement status, project-marker names, bounded relationship summaries, and any matching prospective trace association. It excludes the selected preview, file contents, credentials, full traced command arguments, and cleanup authority. A custom provider still has its own operating-system permissions and network policy; configure only a command you trust.
 
 `CLEAN_YOUR_DATA_AI_COMMAND` can provide a session-only environment override.
 
@@ -216,7 +255,7 @@ python3 audit-local-files/scripts/compare_reports.py \
 
 The comparison reports changes in measured disk usage, target areas, Codex workspace counts, dirty Git entries, rebuildable artifacts, exact duplicate groups, and interactive-map coverage. Keep snapshots local unless you have reviewed their paths.
 
-## Install The Optional Codex Skill
+## Legacy Machine-Wide Audit Skill
 
 ```bash
 git clone https://github.com/MicroMilo/clean-your-data.git
@@ -230,4 +269,4 @@ Then ask:
 Use $audit-local-files to audit my local file organization. Start read-only and anonymized. Do not delete anything.
 ```
 
-The skill adds a repeatable audit and evidence protocol. The installable `cyd` package is the interactive product.
+This compatibility Skill covers broad home-directory reports and snapshot comparison. Use `skills/clean-your-data` for the main product workflow.

@@ -85,6 +85,19 @@ def main() -> int:
         assert status == "complete"
         assert [node["name"] for node in children] == ["summary.md"]
 
+        scan_globals = scanner.scan_space_map.__globals__
+        original_child_limit = scan_globals["SPACE_MAP_CHILD_COUNT_LIMIT"]
+        scan_globals["SPACE_MAP_CHILD_COUNT_LIMIT"] = 1
+        try:
+            limited_map = scanner.scan_space_map(
+                [focus], [], [focus], home, 0, 20, 5, 0, True
+            )
+        finally:
+            scan_globals["SPACE_MAP_CHILD_COUNT_LIMIT"] = original_child_limit
+        limited_root = limited_map["nodes"][0]
+        assert limited_root["child_count"] == 1
+        assert limited_root["child_count_limited"] is True
+
         report_path = home / "interactive.json"
         report_path.write_text(result.stdout, encoding="utf-8")
         subprocess.run([sys.executable, str(VALIDATE_SCRIPT), str(report_path)], check=True)
